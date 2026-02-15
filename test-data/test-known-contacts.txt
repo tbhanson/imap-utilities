@@ -1,0 +1,7 @@
+# Family
+alice@example.com
+
+# Friends
+bob@example.org
+
+# blank lines and comments should be ignored

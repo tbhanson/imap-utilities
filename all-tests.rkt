@@ -13,4 +13,6 @@
   "test/test-parse-date-time-string-statistics.rkt"
   "test/test-parse-from-address-statistics.rkt"
   "test/test-parse-to-address-statistics.rkt"
+  "test/test-known-contacts.rkt"
+  "test/test-digest-report.rkt"
   )

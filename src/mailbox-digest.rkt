@@ -3,6 +3,7 @@
 (require
   "imap-email-account-credentials.rkt"
   "connect-to-imap-account.rkt"
+  "gmail-oauth2.rkt"
   net/imap
   "main-mail-header-parts.rkt"
   "mail-digest.rkt"
@@ -45,9 +46,16 @@
 
 
 ;; Fetch headers from an IMAP server and build a local digest.
+;; Automatically uses OAuth2 for accounts with xoauth2? set to #t.
 (define (get-mailbox-digest mail-account-credential folder-name item-index-range)
   (let ([imap-conn
-         (securely-connect-to-imap-account mail-account-credential folder-name)]
+         (if (imap-email-account-credentials-xoauth2? mail-account-credential)
+             ;; OAuth2 connection (Gmail etc.)
+             (let ([oauth2-creds (load-google-oauth2-details)]
+                   [email (imap-email-account-credentials-mailaddress mail-account-credential)])
+               (oauth2-connect-to-imap email oauth2-creds folder-name))
+             ;; Password connection
+             (securely-connect-to-imap-account mail-account-credential folder-name))]
         [now-timestamp (now)])
     (let ([msg-count (imap-messages imap-conn)]
           [uid-validity (imap-uidvalidity imap-conn)]

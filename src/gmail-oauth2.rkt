@@ -20,8 +20,7 @@
          openssl
          json
          racket/port
-         web-server/servlet
-         web-server/servlet-env
+         racket/tcp
          "oauth2-details.rkt")
 
 (provide
@@ -85,59 +84,65 @@
 
 ;; Start a temporary local web server, open the browser, and wait for
 ;; Google's redirect with the authorization code.
+;; Uses a simple TCP listener instead of serve/servlet so we can
+;; cleanly shut down the port between auth attempts.
 (define (get-authorization-code client-id redirect-uri)
   (let ([auth-code-channel (make-channel)]
         [port-no (let ([m (regexp-match #rx":([0-9]+)" redirect-uri)])
                    (if m (string->number (second m)) 8080))])
 
-    ;; Servlet that catches the redirect
-    (define (request-handler request)
-      (let ([query (url-query (request-uri request))])
-        (for ([binding query])
-          (when (and (pair? binding) (eq? (car binding) 'code))
-            (channel-put auth-code-channel (cdr binding)))))
-      (response/xexpr
-       '(html
-         (head (title "Authorization Complete"))
-         (body
-          (h1 "Authorization Complete")
-          (p "You can close this browser tab and return to your terminal.")))))
+    ;; Create a TCP listener we can close cleanly
+    (let ([listener (tcp-listen port-no 4 #t "127.0.0.1")])
 
-    ;; Start web server in a background thread
-    (let ([server-thread
-           (thread
-            (lambda ()
-              (serve/servlet request-handler
-                             #:listen-ip "127.0.0.1"
-                             #:port port-no
-                             #:servlet-path "/"
-                             #:servlet-regexp #rx""
-                             #:launch-browser? #f)))])
+      ;; Handle one request in a background thread
+      (let ([server-thread
+             (thread
+              (lambda ()
+                (let-values ([(in out) (tcp-accept listener)])
+                  ;; Read the HTTP request to extract the code
+                  (let ([request-line (read-line in)])
+                    ;; Parse ?code=... from the GET request
+                    (let ([match (regexp-match #rx"[?&]code=([^& ]+)" request-line)])
+                      (when match
+                        (channel-put auth-code-channel (second match))))
 
-      ;; Open the user's browser
-      (let ([auth-url (build-authorization-url client-id redirect-uri)])
-        (printf "~nOpening your browser for Google authorization...~n")
-        (printf "If it doesn't open automatically, visit this URL:~n~a~n~n" auth-url)
-        (with-handlers ([exn:fail? (lambda (e)
-                                     (printf "(Could not open browser automatically.)~n"))])
-          (cond
-            [(eq? (system-type) 'macosx)
-             (system (format "open \"~a\"" auth-url))]
-            [(eq? (system-type) 'unix)
-             (system (format "xdg-open \"~a\"" auth-url))]
-            [(eq? (system-type) 'windows)
-             (system (format "start \"\" \"~a\"" auth-url))])))
+                    ;; Send a minimal HTTP response
+                    (display "HTTP/1.1 200 OK\r\n" out)
+                    (display "Content-Type: text/html\r\n" out)
+                    (display "Connection: close\r\n\r\n" out)
+                    (display "<html><body><h1>Authorization Complete</h1>" out)
+                    (display "<p>You can close this browser tab and return to your terminal.</p>" out)
+                    (display "</body></html>" out)
+                    (flush-output out)
+                    (close-input-port in)
+                    (close-output-port out)))))])
 
-      ;; Wait for the code (with timeout)
-      (printf "Waiting for authorization (will timeout in 120 seconds)...~n")
-      (let ([result (sync/timeout 120 auth-code-channel)])
-        (kill-thread server-thread)
-        (if result
-            (begin
-              (printf "Authorization code received!~n")
-              result)
-            (error 'get-authorization-code
-                   "Timed out waiting for authorization. Please try again."))))))
+        ;; Open the user's browser
+        (let ([auth-url (build-authorization-url client-id redirect-uri)])
+          (printf "~nOpening your browser for Google authorization...~n")
+          (printf "If it doesn't open automatically, visit this URL:~n~a~n~n" auth-url)
+          (with-handlers ([exn:fail? (lambda (e)
+                                       (printf "(Could not open browser automatically.)~n"))])
+            (cond
+              [(eq? (system-type) 'macosx)
+               (system (format "open \"~a\"" auth-url))]
+              [(eq? (system-type) 'unix)
+               (system (format "xdg-open \"~a\"" auth-url))]
+              [(eq? (system-type) 'windows)
+               (system (format "start \"\" \"~a\"" auth-url))])))
+
+        ;; Wait for the code (with timeout)
+        (printf "Waiting for authorization (will timeout in 120 seconds)...~n")
+        (let ([result (sync/timeout 120 auth-code-channel)])
+          ;; Clean up: close the listener so the port is freed
+          (tcp-close listener)
+          (kill-thread server-thread)
+          (if result
+              (begin
+                (printf "Authorization code received!~n")
+                result)
+              (error 'get-authorization-code
+                     "Timed out waiting for authorization. Please try again.")))))))
 
 ;; ---- token exchange and refresh ----
 

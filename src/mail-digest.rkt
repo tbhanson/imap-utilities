@@ -21,12 +21,20 @@
 
 ;; Build a "digest" object (message-passing style) from a main-mail-header-parts.
 ;; Supports queries: 'parts, 'date, 'year, 'from-addr, 'to-addrs, 'all-to
+
+;; Wrapper around extract-addresses that handles malformed headers gracefully.
+;; Returns the raw string as a single-element list if parsing fails.
+(define (safe-extract-addresses addr-string mode)
+  (with-handlers ([exn:fail? (lambda (e) (list addr-string))])
+    (let ([result (extract-addresses addr-string mode)])
+      (if (null? result) (list addr-string) result))))
+
 (define (mail-digest-from-header-parts parts)
   (let ([date (possible-parse-date-time-string (main-mail-header-parts-date-string parts))]
-        [from-addr (car (extract-addresses (main-mail-header-parts-from parts) 'address))]
-        [to-addrs (extract-addresses (main-mail-header-parts-to parts) 'address)]
-        [cc-addrs (extract-addresses (main-mail-header-parts-cc parts) 'address)]
-        [bcc-addrs (extract-addresses (main-mail-header-parts-bcc parts) 'address)]
+        [from-addr (car (safe-extract-addresses (main-mail-header-parts-from parts) 'address))]
+        [to-addrs (safe-extract-addresses (main-mail-header-parts-to parts) 'address)]
+        [cc-addrs (safe-extract-addresses (main-mail-header-parts-cc parts) 'address)]
+        [bcc-addrs (safe-extract-addresses (main-mail-header-parts-bcc parts) 'address)]
         [flags (main-mail-header-parts-flags parts)])
     (let ([all-to-addrs
            (for/fold ([so-far (set)])

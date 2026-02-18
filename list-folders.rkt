@@ -89,14 +89,14 @@
 
 ;; ---- arg parsing ----
 
+
+
 (define (parse-args args)
-  (let ([account-name #f]
-        [counts? #f])
-    (for ([arg (vector->list args)])
-      (cond
-        [(string=? arg "--counts") (set! counts? #t)]
-        [else (set! account-name arg)]))
-    (values account-name counts?)))
+  (let ([arg-list (vector->list args)])
+    (let ([counts? (member "--counts" arg-list)]
+          [positional (filter (lambda (a) (not (string-prefix? a "--"))) arg-list)])
+      (values (if (null? positional) #f (first positional))
+              (if counts? #t #f)))))
 
 ;; ---- main ----
 

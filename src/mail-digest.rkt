@@ -24,10 +24,14 @@
 
 ;; Wrapper around extract-addresses that handles malformed headers gracefully.
 ;; Returns the raw string as a single-element list if parsing fails.
+;; Filters out empty strings (from empty header fields like bcc="").
 (define (safe-extract-addresses addr-string mode)
-  (with-handlers ([exn:fail? (lambda (e) (list addr-string))])
-    (let ([result (extract-addresses addr-string mode)])
-      (if (null? result) (list addr-string) result))))
+  (if (string=? (string-trim addr-string) "")
+      '()
+      (with-handlers ([exn:fail? (lambda (e) (list addr-string))])
+        (let ([result (extract-addresses addr-string mode)])
+          (filter (lambda (s) (not (string=? s "")))
+                  (if (null? result) (list addr-string) result))))))
 
 (define (mail-digest-from-header-parts parts)
   (let ([date (possible-parse-date-time-string (main-mail-header-parts-date-string parts))]

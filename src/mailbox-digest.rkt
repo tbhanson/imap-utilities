@@ -96,8 +96,16 @@
           [uid-validity (imap-uidvalidity imap-conn)]
           [lo-index (car item-index-range)])
       (let ([hi-index (min msg-count (cdr item-index-range))])
-        (printf "~a messages in ~a; examining ~a to ~a~n"
-                msg-count folder-name lo-index hi-index)
+        (if (> lo-index msg-count)
+            (printf "~a messages in ~a; no new messages since last fetch~n"
+                    msg-count folder-name)
+            (if (= lo-index 1)
+                (printf "~a messages in ~a; fetching ~a through ~a~n"
+                        msg-count folder-name lo-index hi-index)
+                (printf "~a messages in ~a; fetching ~a new (from ~a to ~a)~n"
+                        msg-count folder-name
+                        (- (+ hi-index 1) lo-index)
+                        lo-index hi-index)))
         (let* ([indices (stream->list (in-range lo-index (+ hi-index 1)))]
                [range-of-message-headers (fetch-headers-in-batches imap-conn indices)])
           (imap-disconnect imap-conn)

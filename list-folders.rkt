@@ -6,13 +6,18 @@
 ;;   racket list-folders.rkt <account-name>
 ;;   racket list-folders.rkt <account-name> --counts
 ;;   racket list-folders.rkt <account-name> --gaps
-;;   racket list-folders.rkt                          ; all accounts
-;;   racket list-folders.rkt --counts                 ; all accounts with counts
-;;   racket list-folders.rkt --gaps                   ; show non-empty folders with no local digest
+;;   racket list-folders.rkt <account-name> --fetch-gaps
+;;   racket list-folders.rkt                             ; all accounts
+;;   racket list-folders.rkt --counts                    ; all accounts with counts
+;;   racket list-folders.rkt --gaps                      ; show unfetched non-empty folders
+;;   racket list-folders.rkt --fetch-gaps                ; generate fetch commands for gaps
 ;;
-;; --counts  opens each folder to get the message count (slower).
-;; --gaps    like --counts, but only shows non-empty folders that have
-;;           no saved digest — i.e. folders you haven't fetched yet.
+;; --counts      opens each folder to get the message count (slower).
+;; --gaps        like --counts, but only shows non-empty folders that have
+;;               no saved digest — i.e. folders you haven't fetched yet.
+;; --fetch-gaps  like --gaps, but outputs ready-to-run fetch commands.
+;;               Pipe to a file to create a script:
+;;                 racket list-folders.rkt --fetch-gaps > fetch-gaps.sh
 
 (require
   "src/imap-email-account-credentials.rkt"
@@ -68,13 +73,21 @@
                                    children))))
             (values (append result (list (cons name selectable?)))))))))
 
-(define (list-folders-for credential show-counts? show-gaps?)
+;; Shell-escape a string for use in a command
+(define (shell-escape s)
+  (format "\"~a\"" (regexp-replace* #rx"\"" s "\\\\\"")))
+
+(define (list-folders-for credential mode)
+  ;; mode is one of: 'plain, 'counts, 'gaps, 'fetch-gaps
   (let* ([account-name (imap-email-account-credentials-accountname credential)]
          [email (imap-email-account-credentials-mailaddress credential)]
          [imap-conn (connect-to credential "INBOX")]
          [folders (collect-folders imap-conn)])
     (imap-disconnect imap-conn)
-    (printf "~n~a (~a):~n" account-name email)
+
+    (unless (eq? mode 'fetch-gaps)
+      (printf "~n~a (~a):~n" account-name email))
+
     (let ([sorted (sort folders string<? #:key car)]
           [gap-count 0])
       (for ([f sorted])
@@ -82,48 +95,69 @@
               [selectable? (cdr f)])
           (cond
             [(not selectable?)
-             (unless show-gaps?
+             (when (eq? mode 'plain)
                (printf "  ~a  (container)~n" name))]
 
-            [(or show-counts? show-gaps?)
+            [(memq mode '(counts gaps fetch-gaps))
              (let ([count (folder-message-count credential name)])
-               (cond
-                 [show-gaps?
-                  ;; Only show non-empty folders with no local digest
+               (case mode
+                 [(counts)
+                  (printf "  ~a" name)
+                  (flush-output)
+                  (if count
+                      (printf " (~a)~n" count)
+                      (printf " (?)~n"))]
+
+                 [(gaps)
                   (when (and count (> count 0))
                     (let ([has-digest? (find-latest-digest-for email name)])
                       (unless has-digest?
                         (set! gap-count (add1 gap-count))
                         (printf "  ~a (~a messages) — NO DIGEST~n" name count))))]
-                 [else
-                  ;; Normal --counts display
-                  (printf "  ~a" name)
-                  (flush-output)
-                  (if count
-                      (printf " (~a)~n" count)
-                      (printf " (?)~n"))]))]
+
+                 [(fetch-gaps)
+                  (when (and count (> count 0))
+                    (let ([has-digest? (find-latest-digest-for email name)])
+                      (unless has-digest?
+                        (set! gap-count (add1 gap-count))
+                        (printf "racket fetch.rkt ~a ~a  # ~a messages~n"
+                                (shell-escape account-name)
+                                (shell-escape name)
+                                count))))]))]
 
             [else
              (printf "  ~a~n" name)])))
-      (when (and show-gaps? (= gap-count 0))
-        (printf "  (all non-empty folders have local digests)~n")))))
+
+      (when (and (memq mode '(gaps fetch-gaps)) (= gap-count 0))
+        (if (eq? mode 'fetch-gaps)
+            (printf "# ~a (~a): all non-empty folders have local digests~n" account-name email)
+            (printf "  (all non-empty folders have local digests)~n"))))))
 
 ;; ---- arg parsing ----
 
 (define (parse-args args)
   (let ([arg-list (vector->list args)])
-    (let ([counts? (member "--counts" arg-list)]
-          [gaps? (member "--gaps" arg-list)]
-          [positional (filter (lambda (a) (not (string-prefix? a "--"))) arg-list)])
-      (values (if (null? positional) #f (first positional))
-              (if counts? #t #f)
-              (if gaps? #t #f)))))
+    (let ([positional (filter (lambda (a) (not (string-prefix? a "--"))) arg-list)])
+      (values
+       (if (null? positional) #f (first positional))
+       (cond
+         [(member "--fetch-gaps" arg-list) 'fetch-gaps]
+         [(member "--gaps" arg-list)       'gaps]
+         [(member "--counts" arg-list)     'counts]
+         [else                             'plain])))))
 
 ;; ---- main ----
 
 (define (main)
-  (let-values ([(account-name show-counts? show-gaps?)
-                (parse-args (current-command-line-arguments))])
+  (let-values ([(account-name mode) (parse-args (current-command-line-arguments))])
+
+    (when (eq? mode 'fetch-gaps)
+      (printf "#!/bin/bash~n")
+      (printf "# Generated by: racket list-folders.rkt --fetch-gaps~n")
+      (printf "# Fetch commands for non-empty folders with no local digest.~n")
+      (printf "# Review and delete any lines you don't want, then run with:~n")
+      (printf "#   bash fetch-gaps.sh~n~n"))
+
     (let ([creds (read-email-account-credentials-hash-from-file-named
                   (default-credentials-filepath))])
       (if account-name
@@ -134,12 +168,12 @@
               (for ([name (sort (hash-keys creds) string<?)])
                 (printf "  ~a~n" name))
               (exit 1))
-            (list-folders-for (hash-ref creds account-name) show-counts? show-gaps?))
+            (list-folders-for (hash-ref creds account-name) mode))
           ;; All accounts
           (for ([name (sort (hash-keys creds) string<?)])
             (with-handlers ([exn:fail?
                              (lambda (e)
                                (printf "~nERROR listing ~a: ~a~n" name (exn-message e)))])
-              (list-folders-for (hash-ref creds name) show-counts? show-gaps?)))))))
+              (list-folders-for (hash-ref creds name) mode)))))))
 
 (main)

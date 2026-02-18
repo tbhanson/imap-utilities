@@ -46,7 +46,7 @@
           (for/fold ([result '()])
                     ([f all-files])
             (let ([mbd (load-mailbox-digest-from-file f)])
-              (if (regexp-match? #rx"(?i:sent)" (mailbox-digest-folder-name mbd))
+              (if (regexp-match? #rx"(?i:sent|gesendet|envoy|inviati|enviados|verzonden)" (mailbox-digest-folder-name mbd))
                   (begin
                     (printf "  Found sent-mail digest: ~a / ~a (~a messages)~n"
                             (mailbox-digest-mail-address mbd)

@@ -5,16 +5,21 @@
 ;; Usage:
 ;;   racket list-folders.rkt <account-name>
 ;;   racket list-folders.rkt <account-name> --counts
+;;   racket list-folders.rkt <account-name> --gaps
 ;;   racket list-folders.rkt                          ; all accounts
 ;;   racket list-folders.rkt --counts                 ; all accounts with counts
+;;   racket list-folders.rkt --gaps                   ; show non-empty folders with no local digest
 ;;
-;; --counts opens each folder to get the message count (slower).
+;; --counts  opens each folder to get the message count (slower).
+;; --gaps    like --counts, but only shows non-empty folders that have
+;;           no saved digest — i.e. folders you haven't fetched yet.
 
 (require
   "src/imap-email-account-credentials.rkt"
   "src/connect-to-imap-account.rkt"
   "src/gmail-oauth2.rkt"
   "src/oauth2-details.rkt"
+  "src/mailbox-digest.rkt"
   net/imap
   openssl)
 
@@ -63,45 +68,62 @@
                                    children))))
             (values (append result (list (cons name selectable?)))))))))
 
-(define (list-folders-for credential show-counts?)
+(define (list-folders-for credential show-counts? show-gaps?)
   (let* ([account-name (imap-email-account-credentials-accountname credential)]
          [email (imap-email-account-credentials-mailaddress credential)]
          [imap-conn (connect-to credential "INBOX")]
          [folders (collect-folders imap-conn)])
     (imap-disconnect imap-conn)
     (printf "~n~a (~a):~n" account-name email)
-    (let ([sorted (sort folders string<? #:key car)])
+    (let ([sorted (sort folders string<? #:key car)]
+          [gap-count 0])
       (for ([f sorted])
         (let ([name (car f)]
               [selectable? (cdr f)])
           (cond
             [(not selectable?)
-             (printf "  ~a  (container)~n" name)]
-            [show-counts?
-             (printf "  ~a" name)
-             (flush-output)
+             (unless show-gaps?
+               (printf "  ~a  (container)~n" name))]
+
+            [(or show-counts? show-gaps?)
              (let ([count (folder-message-count credential name)])
-               (if count
-                   (printf " (~a)~n" count)
-                   (printf " (?)~n")))]
+               (cond
+                 [show-gaps?
+                  ;; Only show non-empty folders with no local digest
+                  (when (and count (> count 0))
+                    (let ([has-digest? (find-latest-digest-for email name)])
+                      (unless has-digest?
+                        (set! gap-count (add1 gap-count))
+                        (printf "  ~a (~a messages) — NO DIGEST~n" name count))))]
+                 [else
+                  ;; Normal --counts display
+                  (printf "  ~a" name)
+                  (flush-output)
+                  (if count
+                      (printf " (~a)~n" count)
+                      (printf " (?)~n"))]))]
+
             [else
-             (printf "  ~a~n" name)]))))))
+             (printf "  ~a~n" name)])))
+      (when (and show-gaps? (= gap-count 0))
+        (printf "  (all non-empty folders have local digests)~n")))))
 
 ;; ---- arg parsing ----
-
-
 
 (define (parse-args args)
   (let ([arg-list (vector->list args)])
     (let ([counts? (member "--counts" arg-list)]
+          [gaps? (member "--gaps" arg-list)]
           [positional (filter (lambda (a) (not (string-prefix? a "--"))) arg-list)])
       (values (if (null? positional) #f (first positional))
-              (if counts? #t #f)))))
+              (if counts? #t #f)
+              (if gaps? #t #f)))))
 
 ;; ---- main ----
 
 (define (main)
-  (let-values ([(account-name show-counts?) (parse-args (current-command-line-arguments))])
+  (let-values ([(account-name show-counts? show-gaps?)
+                (parse-args (current-command-line-arguments))])
     (let ([creds (read-email-account-credentials-hash-from-file-named
                   (default-credentials-filepath))])
       (if account-name
@@ -112,12 +134,12 @@
               (for ([name (sort (hash-keys creds) string<?)])
                 (printf "  ~a~n" name))
               (exit 1))
-            (list-folders-for (hash-ref creds account-name) show-counts?))
+            (list-folders-for (hash-ref creds account-name) show-counts? show-gaps?))
           ;; All accounts
           (for ([name (sort (hash-keys creds) string<?)])
             (with-handlers ([exn:fail?
                              (lambda (e)
                                (printf "~nERROR listing ~a: ~a~n" name (exn-message e)))])
-              (list-folders-for (hash-ref creds name) show-counts?)))))))
+              (list-folders-for (hash-ref creds name) show-counts? show-gaps?)))))))
 
 (main)

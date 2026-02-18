@@ -126,12 +126,22 @@
 (define (default-digest-dir)
   (build-path (find-system-path 'home-dir) ".imap_secrets" "digests"))
 
+;; Sanitize a string for use in a filename — replace path-unsafe characters
+(define (sanitize-for-filename s)
+  (string-replace
+   (string-replace
+    (string-replace
+     (string-replace s "/" "_")
+     "[" "_")
+    "]" "_")
+   " " "_"))
+
 (define (mail-digest-file-name a-mailbox-digest)
   (format "mailbox-digest_~a_~a_~a.ser"
           (~t (mailbox-digest-timestamp a-mailbox-digest)
               "yyyy-MM-dd_HH:mm:ss")
           (mailbox-digest-mail-address a-mailbox-digest)
-          (mailbox-digest-folder-name a-mailbox-digest)))
+          (sanitize-for-filename (mailbox-digest-folder-name a-mailbox-digest))))
 
 
 ;; ---- analysis ----
@@ -170,7 +180,7 @@
 (define (find-latest-digest-for email-address folder-name)
   (let ([dir (default-digest-dir)])
     (if (directory-exists? dir)
-        (let* ([suffix (format "_~a_~a.ser" email-address folder-name)]
+        (let* ([suffix (format "_~a_~a.ser" email-address (sanitize-for-filename folder-name))]
                [matching
                 (sort
                  (for/list ([f (directory-list dir #:build? #t)]

@@ -10,7 +10,7 @@
 ;;   racket list-folders.rkt                             ; all accounts
 ;;   racket list-folders.rkt --counts                    ; all accounts with counts
 ;;   racket list-folders.rkt --gaps                      ; show unfetched non-empty folders
-;;   racket list-folders.rkt --fetch-gaps                ; generate fetch commands for gaps
+;;   racket list-folders.rkt --fetch-gaps                ; generate fetch commands for gaps (bash script we can edit to fetch folders we haven't digested yet)
 ;;
 ;; --counts      opens each folder to get the message count (slower).
 ;; --gaps        like --counts, but only shows non-empty folders that have

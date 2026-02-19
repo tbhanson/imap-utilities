@@ -23,7 +23,7 @@ src/                    Source modules
   mail-digest.rkt                      Per-message digest (query interface)
   mailbox-digest.rkt                   Folder-level digest: fetch, save, load, analyze
   digest-report.rkt                    Statistics report from a mailbox digest
-  known-contacts.rkt                   Whitelist of contacts to keep
+  known-contacts.rkt                   Category-aware contact management
   parse-date-time-string-statistics.rkt
   parse-from-address-statistics.rkt
   parse-to-address-statistics.rkt
@@ -37,7 +37,9 @@ fetch-all.rkt           Fetch headers from all accounts in one run
 report.rkt              Load a saved digest and print statistics
 report-all.rkt          Combined report across all saved digests
 suggest-contacts.rkt    Suggest known contacts from sent-mail analysis
-list-folders.rkt        List IMAP folders for an account (with optional counts)
+find-unread.rkt         Find unread messages from known contacts
+list-folders.rkt        List IMAP folders (with counts, gaps, fetch scripts)
+inspect-digest.rkt      Sanity-check field population in saved digests
 credentials-example.txt Example credentials file format
 ```
 
@@ -56,7 +58,7 @@ Credentials are stored outside the codebase in `~/.imap_secrets/`:
 ```
 ~/.imap_secrets/
   credentials              # IMAP account list (Racket #prefab format)
-  known-contacts           # Email addresses of people to keep (one per line)
+  known-contacts           # Categorized contact list (one email per line)
   digests/                 # Locally cached mail header digests
   .oauth2_google           # Google OAuth2 client credentials
   .oauth2_tokens_<addr>    # OAuth2 tokens per account (auto-managed)
@@ -109,21 +111,28 @@ that, saved tokens are used automatically.
 tokens expire after 7 days. Once everything works, publish the app in the
 Cloud Console (OAuth consent screen → Publish App) to get permanent tokens.
 
-### Known contacts (optional)
+### Known contacts
 
 Create `~/.imap_secrets/known-contacts` with email addresses of people whose
-mail you want to keep — one address per line, `#` for comments:
+mail you want to keep. Lines starting with `#` serve as category headers —
+all addresses below a header belong to that category:
 
 ```
-# Family
+# family
 mom@example.com
 dad@example.com
-# Friends
+
+# friends
 alice@example.org
+bob@example.com
+
+# written to 10 or more times
+carol@work.com
 ```
 
-Matching is case-insensitive. See also `suggest-contacts.rkt` below for a way
-to bootstrap this file from your sent mail.
+Matching is case-insensitive. Categories are used by `find-unread.rkt` to
+filter results (e.g. `--category family`). See `suggest-contacts.rkt` below
+for a way to bootstrap this file from your sent mail.
 
 ### Run tests
 
@@ -138,17 +147,23 @@ Tests are fully offline and use anonymized test data.
 ### List IMAP folders
 
 ```bash
-racket list-folders.rkt "my-account"           # list folder names
-racket list-folders.rkt "my-account" --counts   # include message counts (slower)
-racket list-folders.rkt "my-account" --gaps     # show non-empty folders with no local digest
-racket list-folders.rkt                         # all accounts
-racket list-folders.rkt --counts                # all accounts with counts
-racket list-folders.rkt --gaps                  # find undigested folders across all accounts
+racket list-folders.rkt "my-account"             # list folder names
+racket list-folders.rkt "my-account" --counts     # include message counts (slower)
+racket list-folders.rkt "my-account" --gaps       # non-empty folders with no local digest
+racket list-folders.rkt "my-account" --fetch-gaps # generate fetch commands for gaps
+racket list-folders.rkt                           # all accounts
+racket list-folders.rkt --counts                  # all accounts with counts
+racket list-folders.rkt --gaps                    # find undigested folders across all accounts
+racket list-folders.rkt --fetch-gaps > fetch-gaps.sh  # generate a script to close all gaps
 ```
 
-Useful for finding the correct folder names (which vary by provider and
+The `--fetch-gaps` option generates a bash script with one `racket fetch.rkt`
+command per unfetched folder. Review and edit the script (removing folders like
+All Mail, Spam, Trash, Drafts), then run it with `bash fetch-gaps.sh`.
+
+Useful for finding the correct folder names, which vary by provider and
 locale — e.g. Gmail in German uses `[Gmail]/Gesendet` instead of
-`[Gmail]/Sent Mail`).
+`[Gmail]/Sent Mail`.
 
 ### Fetch headers from an account
 
@@ -168,10 +183,16 @@ Headers are fetched in batches of 200 with progress reporting.
 ### Fetch all accounts at once
 
 ```bash
-racket fetch-all.rkt                # full fetch of INBOX for all accounts
-racket fetch-all.rkt --update       # incremental fetch for all accounts
-racket fetch-all.rkt "Sent" --update  # specify a different folder
+racket fetch-all.rkt                    # full fetch of INBOX for all accounts
+racket fetch-all.rkt --update           # incremental fetch of INBOX for all accounts
+racket fetch-all.rkt "Sent" --update    # specify a different folder
+racket fetch-all.rkt --all-digested     # incremental update of every account+folder
+                                        #   that already has a saved digest
 ```
+
+The `--all-digested` flag is the most convenient for routine use: it scans
+your saved digests, finds every (account, folder) pair you've previously
+fetched, and does an incremental update for each one.
 
 Accounts that fail (e.g. expired tokens, wrong password) are skipped with
 a warning — one bad account doesn't stop the rest.
@@ -213,24 +234,59 @@ account.)
 Then analyze who you've been writing to:
 
 ```bash
-racket suggest-contacts.rkt                # people you've written to 2+ times
-racket suggest-contacts.rkt --min 10       # only those you've written to 10+ times
-racket suggest-contacts.rkt --save         # append new addresses to known-contacts file
+racket suggest-contacts.rkt                 # people you've written to 2+ times
+racket suggest-contacts.rkt --min 10        # only those you've written to 10+ times
+racket suggest-contacts.rkt --save          # append new addresses to known-contacts file
+racket suggest-contacts.rkt --min 5 --bare >> ~/.imap_secrets/known-contacts
 ```
 
 Start with a high `--min` value to get your closest contacts first, review
 the list, then lower it gradually. The `--save` flag appends to your
-known-contacts file (you can always edit it afterward).
+known-contacts file; `--bare` outputs just email addresses (one per line,
+with a `#` category comment) suitable for piping directly into the file.
+Each run only outputs addresses not already in your known-contacts, so you
+can progressively lower the threshold without creating duplicates.
+
+### Find unread messages from known contacts
+
+```bash
+racket find-unread.rkt                              # unread from known contacts
+racket find-unread.rkt --all                        # unread from anyone
+racket find-unread.rkt --from someone@example.com   # unread from one sender
+racket find-unread.rkt --category family            # unread from a contact category
+racket find-unread.rkt --account "my-gmail"         # only search one account
+racket find-unread.rkt --category friends --account "my-gmail"  # combine filters
+racket find-unread.rkt --categories                 # list available categories
+```
+
+Shows date, sender, category, and subject for each unread message.
+
+**Note:** Unread status reflects the state at fetch time. For current status,
+do a fresh full fetch first (not `--update`, which only grabs new messages
+without re-checking flags on existing ones).
+
+### Inspect digest quality
+
+```bash
+racket inspect-digest.rkt latest    # inspect most recent digest
+racket inspect-digest.rkt each      # detailed report for every digest
+racket inspect-digest.rkt all       # combined summary across all digests
+```
+
+Shows field population percentages (date, from, to, cc, bcc, subject, flags)
+and flag distribution. Useful for verifying data quality after fetching.
 
 ## Status
 
 - **Working:** Password and OAuth2 (Gmail) IMAP connections, batched header
   fetching with progress, incremental fetch, local digest save/load,
-  single-account and cross-account statistics reports, known-contacts
-  classification, sent-mail analysis for contact suggestion, IMAP folder
-  listing with message counts and gap detection
-- **Planned:** Contact categories (family/friends/subscriptions), purge
-  candidate reports, batch deletion, more providers for OAuth2
+  single-account and cross-account statistics reports, category-aware
+  known-contacts, sent-mail analysis for contact suggestion, unread message
+  search with category and account filtering, IMAP folder listing with
+  message counts, gap detection, and fetch script generation, digest
+  quality inspection
+- **Planned:** Purge candidate reports, batch deletion, more providers
+  for OAuth2
 
 ## License
 

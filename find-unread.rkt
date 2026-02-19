@@ -8,8 +8,14 @@
 ;;   racket find-unread.rkt --from someone@example.com   ; unread from a specific sender
 ;;   racket find-unread.rkt --category family            ; unread from a contact category
 ;;   racket find-unread.rkt --account "my-gmail"         ; only search one account
-;;   racket find-unread.rkt --category friends --account "my-gmail"  ; combine filters
+;;   racket find-unread.rkt --year 2024                  ; only messages from 2024
+;;   racket find-unread.rkt --since 2023-01-01           ; messages on or after date
+;;   racket find-unread.rkt --before 2024-07-01          ; messages before date
+;;   racket find-unread.rkt --category family --year 2025  ; combine filters
 ;;   racket find-unread.rkt --categories                 ; list available categories
+;;
+;; Date filters can be combined: --since 2024-01-01 --before 2024-07-01
+;; gives the first half of 2024.
 ;;
 ;; Scans all saved digests (excluding sent-mail folders) and shows
 ;; messages that don't have the \Seen flag.
@@ -20,6 +26,7 @@
   "src/main-mail-header-parts.rkt"
   "src/mail-digest.rkt"
   "src/known-contacts.rkt"
+  "src/parse-mail-dates.rkt"
   gregor)
 
 ;; ---- helpers ----
@@ -31,10 +38,44 @@
   (with-handlers ([exn:fail? (lambda (e) "")])
     ((mail-digest-from-header-parts hdr) 'from-addr)))
 
+(define (message-date hdr)
+  (with-handlers ([exn:fail? (lambda (e) #f)])
+    (possible-parse-date-time-string (main-mail-header-parts-date-string hdr))))
+
+(define (message-year hdr)
+  (let ([d (message-date hdr)])
+    (and d (->year d))))
+
+;; Parse a date string like "2024-01-15" into a gregor date
+(define (parse-date-arg s)
+  (with-handlers ([exn:fail?
+                   (lambda (e)
+                     (printf "Could not parse date ~s. Use format YYYY-MM-DD.~n" s)
+                     (exit 1))])
+    (parse-date s "yyyy-MM-dd")))
+
+;; Check whether a message date falls within the specified filters
+(define (date-matches? hdr year-filter since-filter before-filter)
+  (cond
+    ;; No date filters — everything matches
+    [(and (not year-filter) (not since-filter) (not before-filter)) #t]
+    ;; Year filter
+    [year-filter
+     (let ([yr (message-year hdr)])
+       (and yr (= yr year-filter)))]
+    ;; Date range filters
+    [else
+     (let ([d (message-date hdr)])
+       (if (not d)
+           #f  ; can't parse date, skip
+           (let ([msg-date (->date d)])
+             (and (or (not since-filter)
+                      (date>=? msg-date since-filter))
+                  (or (not before-filter)
+                      (date<? msg-date before-filter))))))]))
+
 ;; ---- loading ----
 
-;; Load all non-sent digests (latest per account+folder).
-;; If account-email is given, only load digests for that account.
 (define (load-inbox-digests account-email)
   (let ([dir (default-digest-dir)])
     (if (directory-exists? dir)
@@ -49,10 +90,8 @@
                                  (printf "Warning: could not read ~a~n"
                                          (file-name-from-path f)))])
                 (let ([mbd (load-mailbox-digest-from-file f)])
-                  ;; Skip sent-mail digests
                   (unless (regexp-match? #rx"(?i:sent|gesendet|envoy|inviati|enviados|verzonden)"
                                          (mailbox-digest-folder-name mbd))
-                    ;; Filter by account if specified
                     (when (or (not account-email)
                               (string=? (mailbox-digest-mail-address mbd) account-email))
                       (let ([key (cons (mailbox-digest-mail-address mbd)
@@ -65,7 +104,6 @@
             (hash-values by-key)))
         '())))
 
-;; Resolve an account name to an email address
 (define (account-name->email account-name)
   (let ([creds (read-email-account-credentials-hash-from-file-named
                 (default-credentials-filepath))])
@@ -85,6 +123,9 @@
         [from-filter #f]
         [category-filter #f]
         [account-filter #f]
+        [year-filter #f]
+        [since-filter #f]
+        [before-filter #f]
         [list-categories? #f])
     (let loop ([remaining arg-list])
       (cond
@@ -107,13 +148,27 @@
               (not (null? (cdr remaining))))
          (set! account-filter (cadr remaining))
          (loop (cddr remaining))]
+        [(and (string=? (car remaining) "--year")
+              (not (null? (cdr remaining))))
+         (set! year-filter (string->number (cadr remaining)))
+         (loop (cddr remaining))]
+        [(and (string=? (car remaining) "--since")
+              (not (null? (cdr remaining))))
+         (set! since-filter (parse-date-arg (cadr remaining)))
+         (loop (cddr remaining))]
+        [(and (string=? (car remaining) "--before")
+              (not (null? (cdr remaining))))
+         (set! before-filter (parse-date-arg (cadr remaining)))
+         (loop (cddr remaining))]
         [else (loop (cdr remaining))]))
-    (values show-all? from-filter category-filter account-filter list-categories?)))
+    (values show-all? from-filter category-filter account-filter
+            year-filter since-filter before-filter list-categories?)))
 
 ;; ---- main ----
 
 (define (main)
-  (let-values ([(show-all? from-filter category-filter account-filter list-categories?)
+  (let-values ([(show-all? from-filter category-filter account-filter
+                 year-filter since-filter before-filter list-categories?)
                 (parse-args (current-command-line-arguments))])
 
     (let ([categorized (load-known-contacts-categorized (default-known-contacts-filepath))]
@@ -135,7 +190,7 @@
       ;; Build the filter set based on flags
       (let ([filter-set
              (cond
-               [show-all? #f]  ; #f means match everyone
+               [show-all? #f]
                [from-filter (set from-filter)]
                [category-filter
                 (let ([cat-contacts (contacts-in-category categorized category-filter)])
@@ -147,11 +202,18 @@
                   cat-contacts)]
                [else known-set])]
             [filter-label
-             (cond
-               [show-all? "anyone"]
-               [from-filter (format "~a" from-filter)]
-               [category-filter (format "category: ~a" category-filter)]
-               [else "known contacts"])])
+             (string-join
+              (filter values
+                      (list
+                       (cond
+                         [show-all? "anyone"]
+                         [from-filter (format "from ~a" from-filter)]
+                         [category-filter (format "category: ~a" category-filter)]
+                         [else "known contacts"])
+                       (and year-filter (format "year ~a" year-filter))
+                       (and since-filter (format "since ~a" (~t since-filter "yyyy-MM-dd")))
+                       (and before-filter (format "before ~a" (~t before-filter "yyyy-MM-dd")))))
+              ", ")])
 
         ;; Resolve account filter
         (let ([account-email
@@ -191,8 +253,12 @@
                     (unless (message-seen? hdr)
                       (set! total-unread (add1 total-unread))
                       (let ([from (message-from-addr hdr)])
-                        (when (or (not filter-set)  ; --all
-                                  (set-member? filter-set (string-downcase from)))
+                        (when (and
+                               ;; Sender filter
+                               (or (not filter-set)
+                                   (set-member? filter-set (string-downcase from)))
+                               ;; Date filter
+                               (date-matches? hdr year-filter since-filter before-filter))
                           (set! total-matching (add1 total-matching))
                           (set! unread-matches
                                 (cons (list from

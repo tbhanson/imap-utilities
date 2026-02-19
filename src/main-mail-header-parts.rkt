@@ -32,7 +32,7 @@
  )
 
 (define main-mail-header-part-labels
-  (list #"date" #"from" #"to" #"cc" #"bcc" #"subj"))
+  (list #"date" #"from" #"to" #"cc" #"bcc" #"subject"))
 
 (define main-mail-header-part-imap-symbols
   '(uid header flags))
@@ -55,5 +55,5 @@
      (field-contents #"to" header)
      (field-contents #"cc" header)
      (field-contents #"bcc" header)
-     (field-contents #"subj" header)
+     (field-contents #"subject" header)
      flags)))

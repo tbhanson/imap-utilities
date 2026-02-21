@@ -40,6 +40,7 @@ suggest-contacts.rkt    Suggest known contacts from sent-mail analysis
 find-unread.rkt         Find unread messages from known contacts
 find-by-flag.rkt        Search local digests for messages by flag
 view-mail.rkt           View, delete, or manage flags on messages (live IMAP)
+purge-candidates.rkt    Find bulk senders to delete, with optional deletion
 list-folders.rkt        List IMAP folders (with counts, gaps, fetch scripts)
 inspect-digest.rkt      Sanity-check field population in saved digests
 credentials-example.txt Example credentials file format
@@ -296,10 +297,36 @@ racket view-mail.rkt --flag '$Phishing' --delete
 racket view-mail.rkt --flag '$Phishing' --remove-flag
 ```
 
-When deleting, the tool marks affected messages with a `$DeletedOnIMAPServer` flag
+When deleting, the tool marks affected messages with a `$LocalDeleted` flag
 in the local digest, preserving header history even after server deletion.
 
 Use single quotes around flags starting with `$` to prevent shell expansion.
+
+### Find and delete bulk senders (purge candidates)
+
+```bash
+# List senders not in known-contacts, sorted by message count:
+racket purge-candidates.rkt
+racket purge-candidates.rkt --min 50               # only senders with 50+ messages
+racket purge-candidates.rkt --before 2023-01-01    # only count old messages
+racket purge-candidates.rkt --year 2020            # only count messages from 2020
+
+# Show messages from a specific sender:
+racket purge-candidates.rkt --from noreply@github.com
+racket purge-candidates.rkt --from noreply@github.com --before 2024-01-01
+
+# Delete all messages from a sender (connects to IMAP):
+racket purge-candidates.rkt --from noreply@github.com --delete
+racket purge-candidates.rkt --from noreply@github.com --before 2024-01-01 --delete
+racket purge-candidates.rkt --from noreply@github.com --delete -y   # skip confirmation
+```
+
+The report mode (no `--from`) is purely local and fast. It shows a table of
+unknown senders with message counts and how many accounts they appear in.
+Use `--from` to drill down into a specific sender, then add `--delete` to
+remove their messages. Date filters let you keep recent messages while
+purging old ones. Deleted messages are tombstoned in the local digest with
+`$DeletedOnIMAPServer`.
 
 ### Inspect digest quality
 
@@ -322,9 +349,9 @@ and flag distribution. Useful for verifying data quality after fetching.
   live message viewing with full headers and body, IMAP flag management
   (add/remove), message deletion with local tombstoning, IMAP folder listing
   with message counts, gap detection, and fetch script generation, digest
-  quality inspection
-- **Planned:** Purge candidate reports (bulk senders not in known-contacts),
-  batch deletion workflows, more providers for OAuth2
+  quality inspection, purge candidate identification and per-sender deletion
+- **Planned:** Batch deletion workflows (multi-sender, rule-based),
+  more providers for OAuth2
 
 ## License
 

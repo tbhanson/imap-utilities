@@ -8,7 +8,7 @@ Tools for exploring, analyzing, and cleaning up IMAP email accounts using Racket
 - Fetch and locally cache mail header digests for offline analysis
 - Report statistics: message counts by sender, by year/month, etc.
 - Identify important mail from friends and family vs. bulk/automated senders
-- Eventually: rule-based identification of mail to keep or purge
+- View, flag-manage, and delete messages directly from the command line
 
 ## Project structure
 
@@ -38,6 +38,8 @@ report.rkt              Load a saved digest and print statistics
 report-all.rkt          Combined report across all saved digests
 suggest-contacts.rkt    Suggest known contacts from sent-mail analysis
 find-unread.rkt         Find unread messages from known contacts
+find-by-flag.rkt        Search local digests for messages by flag
+view-mail.rkt           View, delete, or manage flags on messages (live IMAP)
 list-folders.rkt        List IMAP folders (with counts, gaps, fetch scripts)
 inspect-digest.rkt      Sanity-check field population in saved digests
 credentials-example.txt Example credentials file format
@@ -161,10 +163,6 @@ The `--fetch-gaps` option generates a bash script with one `racket fetch.rkt`
 command per unfetched folder. Review and edit the script (removing folders like
 All Mail, Spam, Trash, Drafts), then run it with `bash fetch-gaps.sh`.
 
-Useful for finding the correct folder names, which vary by provider and
-locale — e.g. Gmail in German uses `[Gmail]/Gesendet` instead of
-`[Gmail]/Sent Mail`.
-
 ### Fetch headers from an account
 
 ```bash
@@ -255,6 +253,8 @@ racket find-unread.rkt --all                        # unread from anyone
 racket find-unread.rkt --from someone@example.com   # unread from one sender
 racket find-unread.rkt --category family            # unread from a contact category
 racket find-unread.rkt --account "my-gmail"         # only search one account
+racket find-unread.rkt --year 2024                  # only messages from 2024
+racket find-unread.rkt --since 2024-01-01 --before 2024-07-01  # date range
 racket find-unread.rkt --category friends --account "my-gmail"  # combine filters
 racket find-unread.rkt --categories                 # list available categories
 ```
@@ -264,6 +264,42 @@ Shows date, sender, category, and subject for each unread message.
 **Note:** Unread status reflects the state at fetch time. For current status,
 do a fresh full fetch first (not `--update`, which only grabs new messages
 without re-checking flags on existing ones).
+
+### Search by flag across all accounts
+
+```bash
+racket find-by-flag.rkt                 # list all flags found in all digests
+racket find-by-flag.rkt '$Phishing'     # find which accounts have this flag
+racket find-by-flag.rkt '$Phishing' --show  # show sender/subject/date for each
+```
+
+Scans local digests only (no server connection), so it's fast. Use single
+quotes around flags starting with `$` to prevent shell variable expansion.
+
+### View, delete, or manage flags on messages
+
+```bash
+# View a specific message by UID:
+racket view-mail.rkt "my-account" "INBOX" --uid 54321
+
+# View all messages with a flag in a specific folder:
+racket view-mail.rkt "my-account" "INBOX" --flag '$Phishing'
+
+# Search across ALL accounts (scans digests first, connects only where needed):
+racket view-mail.rkt --flag '$Phishing'
+racket view-mail.rkt --flag '$Phishing' --headers-only
+
+# Delete messages (with confirmation prompt):
+racket view-mail.rkt --flag '$Phishing' --delete
+
+# Remove a flag without deleting the message:
+racket view-mail.rkt --flag '$Phishing' --remove-flag
+```
+
+When deleting, the tool marks affected messages with a `$DeletedOnIMAPServer` flag
+in the local digest, preserving header history even after server deletion.
+
+Use single quotes around flags starting with `$` to prevent shell expansion.
 
 ### Inspect digest quality
 
@@ -282,11 +318,13 @@ and flag distribution. Useful for verifying data quality after fetching.
   fetching with progress, incremental fetch, local digest save/load,
   single-account and cross-account statistics reports, category-aware
   known-contacts, sent-mail analysis for contact suggestion, unread message
-  search with category and account filtering, IMAP folder listing with
-  message counts, gap detection, and fetch script generation, digest
+  search with category/account/date filtering, flag search across digests,
+  live message viewing with full headers and body, IMAP flag management
+  (add/remove), message deletion with local tombstoning, IMAP folder listing
+  with message counts, gap detection, and fetch script generation, digest
   quality inspection
-- **Planned:** Purge candidate reports, batch deletion, more providers
-  for OAuth2
+- **Planned:** Purge candidate reports (bulk senders not in known-contacts),
+  batch deletion workflows, more providers for OAuth2
 
 ## License
 

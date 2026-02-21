@@ -68,27 +68,39 @@
                      (exit 1))])
     (parse-date s "yyyy-MM-dd")))
 
-;; Fast date check using only regex year extraction (for --year filter).
-;; Falls back to full parsing only for --since/--before.
+;; Fast date check using pre-computed fields from digest when available.
+;; Falls back to regex/parsing for digests without parsed fields.
 (define (date-matches? hdr year-filter since-filter before-filter)
   (cond
     [(and (not year-filter) (not since-filter) (not before-filter)) #t]
-    ;; Year-only filter: use fast regex
+    ;; Year-only filter: use struct field if available, else fast regex
     [(and year-filter (not since-filter) (not before-filter))
-     (let ([yr (fast-extract-year (main-mail-header-parts-date-string hdr))])
+     (let ([yr (or (main-mail-header-parts-parsed-year hdr)
+                   (fast-extract-year (main-mail-header-parts-date-string hdr)))])
        (and yr (= yr year-filter)))]
-    ;; Date range: need full parsing (slower)
+    ;; Date range: use epoch if available, else full parsing
     [else
-     (let ([d (message-date hdr)])
-       (if (not d)
-           #f
-           (let ([msg-date (->date d)])
-             (and (or (not year-filter)
-                      (= (->year d) year-filter))
-                  (or (not since-filter)
-                      (date>=? msg-date since-filter))
-                  (or (not before-filter)
-                      (date<? msg-date before-filter))))))]))
+     (let ([epoch (main-mail-header-parts-parsed-epoch hdr)])
+       (if epoch
+           ;; Fast path: compare epoch seconds
+           (and (or (not year-filter)
+                    (let ([yr (main-mail-header-parts-parsed-year hdr)])
+                      (and yr (= yr year-filter))))
+                (or (not since-filter)
+                    (>= epoch (->posix (datetime (->year since-filter) (->month since-filter) (->day since-filter)))))
+                (or (not before-filter)
+                    (< epoch (->posix (datetime (->year before-filter) (->month before-filter) (->day before-filter))))))
+           ;; Slow path: full date parsing
+           (let ([d (message-date hdr)])
+             (if (not d)
+                 #f
+                 (let ([msg-date (->date d)])
+                   (and (or (not year-filter)
+                            (= (->year d) year-filter))
+                        (or (not since-filter)
+                            (date>=? msg-date since-filter))
+                        (or (not before-filter)
+                            (date<? msg-date before-filter))))))))]))
 
 ;; ---- from-address extraction ----
 
@@ -277,7 +289,9 @@
                        (main-mail-header-parts-cc hdr)
                        (main-mail-header-parts-bcc hdr)
                        (main-mail-header-parts-subj hdr)
-                       new-flags))
+                       new-flags
+                       (main-mail-header-parts-parsed-year hdr)
+                       (main-mail-header-parts-parsed-epoch hdr)))
                     hdr))]
              [updated-digest
               (mailbox-digest

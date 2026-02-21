@@ -43,8 +43,9 @@
     (possible-parse-date-time-string (main-mail-header-parts-date-string hdr))))
 
 (define (message-year hdr)
-  (let ([d (message-date hdr)])
-    (and d (->year d))))
+  (or (main-mail-header-parts-parsed-year hdr)
+      (let ([d (message-date hdr)])
+        (and d (->year d)))))
 
 ;; Parse a date string like "2024-01-15" into a gregor date
 (define (parse-date-arg s)
@@ -59,20 +60,30 @@
   (cond
     ;; No date filters — everything matches
     [(and (not year-filter) (not since-filter) (not before-filter)) #t]
-    ;; Year filter
-    [year-filter
+    ;; Year filter: use pre-computed field
+    [(and year-filter (not since-filter) (not before-filter))
      (let ([yr (message-year hdr)])
        (and yr (= yr year-filter)))]
-    ;; Date range filters
+    ;; Date range filters: use epoch if available
     [else
-     (let ([d (message-date hdr)])
-       (if (not d)
-           #f  ; can't parse date, skip
-           (let ([msg-date (->date d)])
-             (and (or (not since-filter)
-                      (date>=? msg-date since-filter))
-                  (or (not before-filter)
-                      (date<? msg-date before-filter))))))]))
+     (let ([epoch (main-mail-header-parts-parsed-epoch hdr)])
+       (if epoch
+           (and (or (not year-filter)
+                    (let ([yr (main-mail-header-parts-parsed-year hdr)])
+                      (and yr (= yr year-filter))))
+                (or (not since-filter)
+                    (>= epoch (->posix (datetime (->year since-filter) (->month since-filter) (->day since-filter)))))
+                (or (not before-filter)
+                    (< epoch (->posix (datetime (->year before-filter) (->month before-filter) (->day before-filter))))))
+           ;; Fallback: full parsing
+           (let ([d (message-date hdr)])
+             (if (not d)
+                 #f
+                 (let ([msg-date (->date d)])
+                   (and (or (not since-filter)
+                            (date>=? msg-date since-filter))
+                        (or (not before-filter)
+                            (date<? msg-date before-filter))))))))]))
 
 ;; ---- loading ----
 

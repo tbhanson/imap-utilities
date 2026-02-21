@@ -153,11 +153,11 @@
              [updated-headers
               (for/list ([hdr (mailbox-digest-mail-headers mbd)])
                 (if (set-member? uid-set (main-mail-header-parts-mail-id hdr))
-                    ;; Add $LocalDeleted to flags
-                    (let ([new-flags (if (member '|$LocalDeleted|
+                    ;; Add $DeletedOnIMAPServer to flags
+                    (let ([new-flags (if (member '|$DeletedOnIMAPServer|
                                                  (main-mail-header-parts-flags hdr))
                                         (main-mail-header-parts-flags hdr)
-                                        (cons '|$LocalDeleted|
+                                        (cons '|$DeletedOnIMAPServer|
                                               (main-mail-header-parts-flags hdr)))])
                       (main-mail-header-parts
                        (main-mail-header-parts-mail-id hdr)
@@ -167,7 +167,9 @@
                        (main-mail-header-parts-cc hdr)
                        (main-mail-header-parts-bcc hdr)
                        (main-mail-header-parts-subj hdr)
-                       new-flags))
+                       new-flags
+                       (main-mail-header-parts-parsed-year hdr)
+                       (main-mail-header-parts-parsed-epoch hdr)))
                     hdr))]
              [updated-digest
               (mailbox-digest

@@ -26,6 +26,8 @@
         [non-empty-bcc 0]
         [non-empty-subj 0]
         [has-flags 0]
+        [has-year 0]
+        [has-epoch 0]
         [flag-counts (make-hash)]
         [sample-subjects '()])
 
@@ -45,6 +47,10 @@
           (set! non-empty-subj (add1 non-empty-subj))
           (when (< (length sample-subjects) 5)
             (set! sample-subjects (cons subj sample-subjects)))))
+      (when (main-mail-header-parts-parsed-year hdr)
+        (set! has-year (add1 has-year)))
+      (when (main-mail-header-parts-parsed-epoch hdr)
+        (set! has-epoch (add1 has-epoch)))
       (let ([flags (main-mail-header-parts-flags hdr)])
         (when (not (null? flags))
           (set! has-flags (add1 has-flags)))
@@ -71,6 +77,8 @@
     (printf "    bcc:     ~a / ~a (~a%)~n" non-empty-bcc total (pct non-empty-bcc))
     (printf "    subject: ~a / ~a (~a%)~n" non-empty-subj total (pct non-empty-subj))
     (printf "    flags:   ~a / ~a (~a%)~n" has-flags total (pct has-flags))
+    (printf "    year:    ~a / ~a (~a%)~n" has-year total (pct has-year))
+    (printf "    epoch:   ~a / ~a (~a%)~n" has-epoch total (pct has-epoch))
 
     (when (not (hash-empty? flag-counts))
       (printf "~n  Flags found:~n")

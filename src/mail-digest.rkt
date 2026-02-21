@@ -15,7 +15,7 @@
 
 
 (define (mail-digest-from-fields mail-id date-string from to cc bcc subj flags)
-  (let ([parts (main-mail-header-parts mail-id date-string from to cc bcc subj flags)])
+  (let ([parts (main-mail-header-parts mail-id date-string from to cc bcc subj flags #f #f)])
     (mail-digest-from-header-parts parts)))
 
 
@@ -34,7 +34,13 @@
                   (if (null? result) (list addr-string) result))))))
 
 (define (mail-digest-from-header-parts parts)
-  (let ([date (possible-parse-date-time-string (main-mail-header-parts-date-string parts))]
+  (let ([date (or (let ([epoch (main-mail-header-parts-parsed-epoch parts)])
+                    (and epoch (posix->datetime epoch)))
+                  (possible-parse-date-time-string (main-mail-header-parts-date-string parts)))]
+        [year (or (main-mail-header-parts-parsed-year parts)
+                  (let ([d (possible-parse-date-time-string
+                            (main-mail-header-parts-date-string parts))])
+                    (and d (->year d))))]
         [from-addr (car (safe-extract-addresses (main-mail-header-parts-from parts) 'address))]
         [to-addrs (safe-extract-addresses (main-mail-header-parts-to parts) 'address)]
         [cc-addrs (safe-extract-addresses (main-mail-header-parts-cc parts) 'address)]
@@ -48,7 +54,7 @@
         (cond
           [(eq? msg 'parts)     parts]
           [(eq? msg 'date)      date]
-          [(eq? msg 'year)      (and date (->year date))]
+          [(eq? msg 'year)      year]
           [(eq? msg 'from-addr) from-addr]
           [(eq? msg 'to-addrs)  to-addrs]
           [(eq? msg 'all-to)    all-to-addrs]

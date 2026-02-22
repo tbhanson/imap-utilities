@@ -90,9 +90,13 @@
 ;; ---- display ----
 
 (define (print-year-table year-counts year-sizes total total-size no-year has-sizes?
-                          #:title [title "All Accounts Combined"])
+                          #:title [title "All Accounts Combined"]
+                          #:bars [bars 'count])
   (let* ([sorted (sort (hash->list year-counts) < #:key car)]
-         [max-count (if (null? sorted) 0 (apply max (map cdr sorted)))]
+         [max-val (if (null? sorted) 0
+                      (if (and has-sizes? (eq? bars 'size))
+                          (apply max (map (lambda (p) (hash-ref year-sizes (car p) 0)) sorted))
+                          (apply max (map cdr sorted))))]
          [bar-width 30])
 
     (printf "~n  ~a~n" title)
@@ -124,8 +128,9 @@
       (let* ([year (car pair)]
              [count (cdr pair)]
              [size (hash-ref year-sizes year 0)]
-             [bar-len (if (= max-count 0) 0
-                          (max 1 (round (* bar-width (/ count max-count)))))])
+             [bar-val (if (and has-sizes? (eq? bars 'size)) size count)]
+             [bar-len (if (= max-val 0) 0
+                          (max 1 (round (* bar-width (/ bar-val max-val)))))])
         (if has-sizes?
             (printf "  ~a  ~a  ~a  ~a~n"
                     (~a year #:min-width 6)
@@ -158,17 +163,26 @@
 
 (define (parse-args args)
   (let ([arg-list (vector->list args)]
-        [per-account? #f])
-    (for ([a arg-list])
-      (when (string=? a "--per-account")
-        (set! per-account? #t)))
-    per-account?))
+        [per-account? #f]
+        [bars 'count])
+    (let loop ([remaining arg-list])
+      (cond
+        [(null? remaining) (void)]
+        [(string=? (car remaining) "--per-account")
+         (set! per-account? #t)
+         (loop (cdr remaining))]
+        [(and (string=? (car remaining) "--bars")
+              (not (null? (cdr remaining))))
+         (set! bars (string->symbol (cadr remaining)))
+         (loop (cddr remaining))]
+        [else (loop (cdr remaining))]))
+    (values per-account? bars)))
 
 ;; ---- main ----
 
 (define (main)
-  (let ([per-account? (parse-args (current-command-line-arguments))]
-        [digests (load-all-latest-digests)])
+  (let-values ([(per-account? bars) (parse-args (current-command-line-arguments))])
+    (let ([digests (load-all-latest-digests)])
 
     (when (null? digests)
       (printf "No digests found.~n")
@@ -177,7 +191,8 @@
     ;; Always show combined summary
     (let-values ([(year-counts year-sizes total total-size no-year has-sizes?)
                   (count-by-year digests)])
-      (print-year-table year-counts year-sizes total total-size no-year has-sizes?)
+      (print-year-table year-counts year-sizes total total-size no-year has-sizes?
+                        #:bars bars)
       (unless has-sizes?
         (printf "~n  (Run 'racket fetch-sizes.rkt' to add size data)~n")))
 
@@ -194,6 +209,7 @@
                               #:title (if has-sz?
                                          (format "~a (~a messages, ~a)"
                                                  email acct-total (format-size acct-size))
-                                         (format "~a (~a messages)" email acct-total)))))))))
+                                         (format "~a (~a messages)" email acct-total))
+                              #:bars bars))))))))
 
 (main)

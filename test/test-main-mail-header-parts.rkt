@@ -24,7 +24,7 @@
          [subj "some subject"]
          [flags (map symbol->imap-flag (list 'seen 'answered))])
      (let ([under-test
-            (main-mail-header-parts id date-string from to cc bcc subj flags 2014 1412878400)])
+            (main-mail-header-parts id date-string from to cc bcc subj flags 2014 1412878400 12345)])
        (check-true  (main-mail-header-parts? under-test))
        (check-equal? (main-mail-header-parts-mail-id under-test) id)
        (check-equal? (main-mail-header-parts-date-string under-test) date-string)
@@ -35,12 +35,13 @@
        (check-equal? (main-mail-header-parts-subj under-test) subj)
        (check-equal? (main-mail-header-parts-flags under-test) flags)
        (check-equal? (main-mail-header-parts-parsed-year under-test) 2014)
-       (check-equal? (main-mail-header-parts-parsed-epoch under-test) 1412878400))))
+       (check-equal? (main-mail-header-parts-parsed-epoch under-test) 1412878400)
+       (check-equal? (main-mail-header-parts-message-size under-test) 12345))))
 
   (test-suite
    "struct with #f date fields"
    (let ([under-test
-          (main-mail-header-parts 456 "" "a@b.com" "c@d.com" "" "" "test" '() #f #f)])
+          (main-mail-header-parts 456 "" "a@b.com" "c@d.com" "" "" "test" '() #f #f #f)])
      (check-true (main-mail-header-parts? under-test))
      (check-false (main-mail-header-parts-parsed-year under-test))
      (check-false (main-mail-header-parts-parsed-epoch under-test))))
@@ -48,7 +49,7 @@
   (test-suite
    "constants"
    (check-false (null? (member #"bcc" main-mail-header-part-labels)))
-   (check-true (not (null? (member #"subject" main-mail-header-part-labels))) "should use #\"subject\" not #\"subj\"")
+   (check-true  (not (null? (member #"subject" main-mail-header-part-labels))) "should use #\"subject\" not #\"subj\"")
    (check-equal? main-mail-header-part-imap-symbols '(uid header flags)))
 
   (test-suite
@@ -66,7 +67,9 @@
        (check-equal? (main-mail-header-parts-parsed-year parts) 2014)
        (check-true (integer? (main-mail-header-parts-parsed-epoch parts)))
        ;; Subject should be populated (uses #"subject" header)
-       (check-true (not (string=? "" (main-mail-header-parts-subj parts)))))))
+       (check-true (not (string=? "" (main-mail-header-parts-subj parts))))
+       ;; message-size is #f from standard converter (fetched separately)
+       (check-false (main-mail-header-parts-message-size parts)))))
 
   (test-suite
    "parsed date fields from various date formats"

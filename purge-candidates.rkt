@@ -8,6 +8,8 @@
 ;;   racket purge-candidates.rkt --min 50          ; only senders with 50+ messages
 ;;   racket purge-candidates.rkt --before 2023-01-01  ; only count old messages
 ;;   racket purge-candidates.rkt --year 2020       ; only count messages from 2020
+;;   racket purge-candidates.rkt --sort size       ; sort by total size instead of count
+;;   racket purge-candidates.rkt --account tbh361  ; only this account (substring match)
 ;;
 ;;   # Show what would be deleted for a specific sender:
 ;;   racket purge-candidates.rkt --from noreply@github.com
@@ -104,6 +106,17 @@
 
 ;; ---- from-address extraction ----
 
+;; ---- formatting ----
+
+(define (format-size bytes)
+  (cond
+    [(>= bytes (* 1024 1024 1024)) (format "~a GB" (~r (/ bytes 1024.0 1024.0 1024.0) #:precision '(= 2)))]
+    [(>= bytes (* 1024 1024))      (format "~a MB" (~r (/ bytes 1024.0 1024.0) #:precision '(= 1)))]
+    [(>= bytes 1024)               (format "~a KB" (~r (/ bytes 1024.0) #:precision '(= 0)))]
+    [else                           (format "~a B" bytes)]))
+
+;; ---- from-address extraction ----
+
 (define from-addr-rx #rx"<([^>]+)>")
 
 (define (extract-from-addr from-str)
@@ -143,13 +156,15 @@
 
 (define (report-purge-candidates digests known-set
                                  year-filter since-filter before-filter
-                                 min-count)
+                                 min-count sort-by)
   (let ([sender-counts (make-hash)]
+        [sender-sizes (make-hash)]
         [sender-accounts (make-hash)]
         [total-unknown 0]
         [total-known 0]
         [total-scanned 0]
-        [total-matched 0])
+        [total-matched 0]
+        [has-sizes? #f])
 
     ;; Count messages per sender
     (for ([mbd (inbox-digests digests)])
@@ -158,18 +173,25 @@
           (set! total-scanned (add1 total-scanned))
           (when (date-matches? hdr year-filter since-filter before-filter)
             (set! total-matched (add1 total-matched))
-            (let ([from (extract-from-addr (main-mail-header-parts-from hdr))])
+            (let ([from (extract-from-addr (main-mail-header-parts-from hdr))]
+                  [sz (main-mail-header-parts-message-size hdr)])
+              (when sz (set! has-sizes? #t))
               (if (set-member? known-set from)
                   (set! total-known (add1 total-known))
                   (begin
                     (set! total-unknown (add1 total-unknown))
                     (hash-update! sender-counts from add1 0)
+                    (when sz
+                      (hash-update! sender-sizes from (lambda (v) (+ v sz)) 0))
                     (hash-update! sender-accounts from
                                  (lambda (s) (set-add s account))
                                  (set)))))))))
 
-    ;; Sort by count descending
-    (let ([sorted (sort (hash->list sender-counts) > #:key cdr)])
+    ;; Sort by count or size descending
+    (let ([sorted (if (eq? sort-by 'size)
+                      (sort (hash->list sender-counts) >
+                            #:key (lambda (p) (hash-ref sender-sizes (car p) 0)))
+                      (sort (hash->list sender-counts) > #:key cdr))])
       (let ([filtered (filter (lambda (p) (>= (cdr p) min-count)) sorted)])
 
         (printf "~nPurge candidates (not in known-contacts):~n")
@@ -190,27 +212,51 @@
           (printf "  (showing senders with ~a+ messages)~n" min-count))
         (newline)
 
-        (printf "  ~a  ~a  ~a~n"
-                (~a "Count" #:min-width 7 #:align 'right)
-                (~a "Accts" #:min-width 5 #:align 'right)
-                "Sender")
-        (printf "  ~a  ~a  ~a~n"
-                (make-string 7 #\-)
-                (make-string 5 #\-)
-                (make-string 40 #\-))
+        (if has-sizes?
+            (begin
+              (printf "  ~a  ~a  ~a  ~a~n"
+                      (~a "Count" #:min-width 7 #:align 'right)
+                      (~a "Size" #:min-width 10 #:align 'right)
+                      (~a "Accts" #:min-width 5 #:align 'right)
+                      "Sender")
+              (printf "  ~a  ~a  ~a  ~a~n"
+                      (make-string 7 #\-)
+                      (make-string 10 #\-)
+                      (make-string 5 #\-)
+                      (make-string 40 #\-)))
+            (begin
+              (printf "  ~a  ~a  ~a~n"
+                      (~a "Count" #:min-width 7 #:align 'right)
+                      (~a "Accts" #:min-width 5 #:align 'right)
+                      "Sender")
+              (printf "  ~a  ~a  ~a~n"
+                      (make-string 7 #\-)
+                      (make-string 5 #\-)
+                      (make-string 40 #\-))))
 
         (for ([pair filtered])
           (let* ([sender (car pair)]
                  [count (cdr pair)]
+                 [size (hash-ref sender-sizes sender 0)]
                  [acct-count (set-count (hash-ref sender-accounts sender))])
-            (printf "  ~a  ~a  ~a~n"
-                    (~a count #:min-width 7 #:align 'right)
-                    (~a acct-count #:min-width 5 #:align 'right)
-                    sender)))
+            (if has-sizes?
+                (printf "  ~a  ~a  ~a  ~a~n"
+                        (~a count #:min-width 7 #:align 'right)
+                        (~a (format-size size) #:min-width 10 #:align 'right)
+                        (~a acct-count #:min-width 5 #:align 'right)
+                        sender)
+                (printf "  ~a  ~a  ~a~n"
+                        (~a count #:min-width 7 #:align 'right)
+                        (~a acct-count #:min-width 5 #:align 'right)
+                        sender))))
 
-        (printf "~n  ~a senders shown (~a total messages)~n"
-                (length filtered)
-                (for/sum ([p filtered]) (cdr p)))))))
+        (let ([total-msgs (for/sum ([p filtered]) (cdr p))]
+              [total-sz (for/sum ([p filtered]) (hash-ref sender-sizes (car p) 0))])
+          (if has-sizes?
+              (printf "~n  ~a senders shown (~a total messages, ~a)~n"
+                      (length filtered) total-msgs (format-size total-sz))
+              (printf "~n  ~a senders shown (~a total messages)~n"
+                      (length filtered) total-msgs)))))))
 
 ;; ---- from-address mode: show details for one sender ----
 
@@ -291,7 +337,8 @@
                        (main-mail-header-parts-subj hdr)
                        new-flags
                        (main-mail-header-parts-parsed-year hdr)
-                       (main-mail-header-parts-parsed-epoch hdr)))
+                       (main-mail-header-parts-parsed-epoch hdr)
+                       (main-mail-header-parts-message-size hdr)))
                     hdr))]
              [updated-digest
               (mailbox-digest
@@ -434,7 +481,9 @@
         [before-filter #f]
         [min-count 2]
         [delete? #f]
-        [auto-confirm? #f])
+        [auto-confirm? #f]
+        [sort-by 'count]
+        [account-filter #f])
     (let loop ([remaining arg-list])
       (cond
         [(null? remaining) (void)]
@@ -458,6 +507,14 @@
               (not (null? (cdr remaining))))
          (set! min-count (string->number (cadr remaining)))
          (loop (cddr remaining))]
+        [(and (string=? (car remaining) "--sort")
+              (not (null? (cdr remaining))))
+         (set! sort-by (string->symbol (cadr remaining)))
+         (loop (cddr remaining))]
+        [(and (string=? (car remaining) "--account")
+              (not (null? (cdr remaining))))
+         (set! account-filter (string-downcase (cadr remaining)))
+         (loop (cddr remaining))]
         [(string=? (car remaining) "--delete")
          (set! delete? #t)
          (loop (cdr remaining))]
@@ -467,28 +524,44 @@
          (loop (cdr remaining))]
         [else (loop (cdr remaining))]))
     (values from-filter year-filter since-filter before-filter
-            min-count delete? auto-confirm?)))
+            min-count delete? auto-confirm? sort-by account-filter)))
 
 ;; ---- main ----
 
 (define (main)
   (let-values ([(from-filter year-filter since-filter before-filter
-                 min-count delete? auto-confirm?)
+                 min-count delete? auto-confirm? sort-by account-filter)
                 (parse-args (current-command-line-arguments))])
 
     (let ([known-set (load-known-contacts (default-known-contacts-filepath))]
-          [digests (load-all-latest-digests)])
+          [all-digests (load-all-latest-digests)])
 
-      (when (null? digests)
+      (when (null? all-digests)
         (printf "No digests found.~n")
         (exit 0))
+
+      ;; Apply account filter if specified
+      (let ([digests (if account-filter
+                        (filter (lambda (mbd)
+                                  (string-contains?
+                                   (string-downcase (mailbox-digest-mail-address mbd))
+                                   account-filter))
+                                all-digests)
+                        all-digests)])
+
+        (when (and account-filter (null? digests))
+          (printf "No digests found matching account '~a'.~n" account-filter)
+          (exit 0))
+
+        (when account-filter
+          (printf "Filtered to account(s) matching '~a'~n" account-filter))
 
       (cond
         ;; Mode 1: Report — list unknown senders by message count
         [(not from-filter)
          (report-purge-candidates digests known-set
                                   year-filter since-filter before-filter
-                                  min-count)]
+                                  min-count sort-by)]
 
         ;; Mode 2: Show details for a specific sender
         [(and from-filter (not delete?))
@@ -527,6 +600,6 @@
                             year-filter since-filter before-filter
                             auto-confirm?)
                            (printf "WARNING: no credential found for ~a~n"
-                                   email)))))))))]))))
+                                   email)))))))))])))))
 
 (main)

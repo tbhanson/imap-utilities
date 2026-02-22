@@ -47,7 +47,8 @@
                   "" "" "test subject"
                   '()
                   2014
-                  1412878400)]
+                  1412878400
+                  5678)]
           [digest (mail-digest-from-header-parts parts)])
      (check-equal? (digest 'year) 2014)
      (check-equal? (digest 'from-addr) "sender@example.com")))
@@ -63,7 +64,7 @@
                   "recipient@example.org"
                   "" "" "test subject"
                   '()
-                  #f #f)]
+                  #f #f #f)]
           [digest (mail-digest-from-header-parts parts)])
      (check-equal? (digest 'year) 2014)))
 

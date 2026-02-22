@@ -28,6 +28,8 @@
         [has-flags 0]
         [has-year 0]
         [has-epoch 0]
+        [has-size 0]
+        [total-size 0]
         [flag-counts (make-hash)]
         [sample-subjects '()])
 
@@ -51,6 +53,10 @@
         (set! has-year (add1 has-year)))
       (when (main-mail-header-parts-parsed-epoch hdr)
         (set! has-epoch (add1 has-epoch)))
+      (let ([sz (main-mail-header-parts-message-size hdr)])
+        (when sz
+          (set! has-size (add1 has-size))
+          (set! total-size (+ total-size sz))))
       (let ([flags (main-mail-header-parts-flags hdr)])
         (when (not (null? flags))
           (set! has-flags (add1 has-flags)))
@@ -79,6 +85,15 @@
     (printf "    flags:   ~a / ~a (~a%)~n" has-flags total (pct has-flags))
     (printf "    year:    ~a / ~a (~a%)~n" has-year total (pct has-year))
     (printf "    epoch:   ~a / ~a (~a%)~n" has-epoch total (pct has-epoch))
+    (printf "    size:    ~a / ~a (~a%)~n" has-size total (pct has-size))
+    (when (> has-size 0)
+      (printf "    total size: ~a~n"
+              (cond
+                [(>= total-size (* 1024 1024 1024))
+                 (format "~a GB" (~r (/ total-size 1024.0 1024.0 1024.0) #:precision '(= 2)))]
+                [(>= total-size (* 1024 1024))
+                 (format "~a MB" (~r (/ total-size 1024.0 1024.0) #:precision '(= 1)))]
+                [else (format "~a KB" (~r (/ total-size 1024.0) #:precision '(= 0)))])))
 
     (when (not (hash-empty? flag-counts))
       (printf "~n  Flags found:~n")

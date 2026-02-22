@@ -6,8 +6,9 @@
 ;; The subset of mail header fields we care about for analysis.
 ;; parsed-year and parsed-epoch are computed at fetch time from date-string,
 ;; enabling fast date filtering without re-parsing.
+;; message-size is the RFC822.SIZE in bytes (fetched via raw IMAP command).
 (struct main-mail-header-parts
-  (mail-id date-string from to cc bcc subj flags parsed-year parsed-epoch)
+  (mail-id date-string from to cc bcc subj flags parsed-year parsed-epoch message-size)
   #:prefab
   )
 
@@ -15,7 +16,7 @@
  (contract-out
   ;; struct automatics
   [main-mail-header-parts (-> integer? string? string? string? string? string? string? list?
-                              (or/c integer? #f) (or/c integer? #f)
+                              (or/c integer? #f) (or/c integer? #f) (or/c integer? #f)
                               main-mail-header-parts?)]
   [main-mail-header-parts? (-> any/c boolean?)]
   [main-mail-header-parts-mail-id (-> main-mail-header-parts? integer?)]
@@ -28,6 +29,7 @@
   [main-mail-header-parts-flags (-> main-mail-header-parts? list?)]
   [main-mail-header-parts-parsed-year (-> main-mail-header-parts? (or/c integer? #f))]
   [main-mail-header-parts-parsed-epoch (-> main-mail-header-parts? (or/c integer? #f))]
+  [main-mail-header-parts-message-size (-> main-mail-header-parts? (or/c integer? #f))]
 
   ;; converter: raw IMAP message -> our struct
   [mail-header->main-mail-header-parts (-> (and/c pair? list?) main-mail-header-parts?)]
@@ -102,4 +104,5 @@
      (field-contents #"subject" header)
      flags
      year
-     epoch)))
+     epoch
+     #f)))  ; message-size — populated separately via raw IMAP

@@ -15,7 +15,7 @@
 
 
 (define (mail-digest-from-fields mail-id date-string from to cc bcc subj flags)
-  (let ([parts (main-mail-header-parts mail-id date-string from to cc bcc subj flags #f #f)])
+  (let ([parts (main-mail-header-parts mail-id date-string from to cc bcc subj flags #f #f #f)])
     (mail-digest-from-header-parts parts)))
 
 

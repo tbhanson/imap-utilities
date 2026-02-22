@@ -169,7 +169,8 @@
                        (main-mail-header-parts-subj hdr)
                        new-flags
                        (main-mail-header-parts-parsed-year hdr)
-                       (main-mail-header-parts-parsed-epoch hdr)))
+                       (main-mail-header-parts-parsed-epoch hdr)
+                       (main-mail-header-parts-message-size hdr)))
                     hdr))]
              [updated-digest
               (mailbox-digest

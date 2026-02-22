@@ -41,6 +41,9 @@ find-unread.rkt         Find unread messages from known contacts
 find-by-flag.rkt        Search local digests for messages by flag
 view-mail.rkt           View, delete, or manage flags on messages (live IMAP)
 purge-candidates.rkt    Find bulk senders to delete, with optional deletion
+quota-report.rkt        Query IMAP storage quota per account
+year-summary.rkt        Message counts (and sizes) by year
+fetch-sizes.rkt         Fetch RFC822.SIZE and patch into existing digests
 list-folders.rkt        List IMAP folders (with counts, gaps, fetch scripts)
 inspect-digest.rkt      Sanity-check field population in saved digests
 credentials-example.txt Example credentials file format
@@ -301,6 +304,36 @@ When deleting, the tool marks affected messages with a `$LocalDeleted` flag
 in the local digest, preserving header history even after server deletion.
 
 Use single quotes around flags starting with `$` to prevent shell expansion.
+
+### Storage quota report
+
+```bash
+racket quota-report.rkt
+```
+
+Queries IMAP GETQUOTAROOT for each configured account and displays storage
+usage vs. limits. Note that Gmail quotas include Drive + Photos + Gmail.
+
+### Year summary
+
+```bash
+racket year-summary.rkt              # combined across all accounts
+racket year-summary.rkt --per-account  # breakdown per account
+```
+
+Shows message counts by year with a visual bar chart. When message sizes
+have been fetched (see below), also shows size per year.
+
+### Fetch message sizes
+
+```bash
+racket fetch-sizes.rkt
+```
+
+Fetches RFC822.SIZE for all messages via raw IMAP commands and patches the
+sizes into existing digest files. This is a one-time operation that adds
+size data without requiring a full re-fetch. After running this, size
+columns appear in `year-summary.rkt` and `purge-candidates.rkt`.
 
 ### Find and delete bulk senders (purge candidates)
 

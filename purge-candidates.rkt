@@ -171,28 +171,28 @@
         [total-matched 0]
         [has-sizes? #f])
 
-    ;; Count messages per sender
+    ;; Count messages per sender (skip tombstoned messages)
     (for ([mbd (inbox-digests digests)])
       (let ([account (mailbox-digest-mail-address mbd)])
         (for ([hdr (mailbox-digest-mail-headers mbd)])
-          (set! total-scanned (add1 total-scanned))
-          (when (date-matches? hdr year-filter since-filter before-filter)
-            (set! total-matched (add1 total-matched))
-            (let ([from (extract-from-addr (main-mail-header-parts-from hdr))]
-                  [sz (main-mail-header-parts-message-size hdr)])
-              (when sz (set! has-sizes? #t))
-              (if (set-member? known-set from)
-                  (set! total-known (add1 total-known))
-                  (begin
-                    (set! total-unknown (add1 total-unknown))
-                    (hash-update! sender-counts from add1 0)
-                    (when sz
-                      (hash-update! sender-sizes from (lambda (v) (+ v sz)) 0))
-                    (hash-update! sender-accounts from
-                                 (lambda (s) (set-add s account))
-                                 (set)))))))))
-
-    ;; Sort by count or size descending
+          (unless (main-mail-header-parts-deleted? hdr)
+            (set! total-scanned (add1 total-scanned))
+            (when (date-matches? hdr year-filter since-filter before-filter)
+              (set! total-matched (add1 total-matched))
+              (let ([from (extract-from-addr (main-mail-header-parts-from hdr))]
+                    [sz (main-mail-header-parts-message-size hdr)])
+                (when sz (set! has-sizes? #t))
+                (if (set-member? known-set from)
+                    (set! total-known (add1 total-known))
+                    (begin
+                      (set! total-unknown (add1 total-unknown))
+                      (hash-update! sender-counts from add1 0)
+                      (when sz
+                        (hash-update! sender-sizes from
+                                     (lambda (v) (+ v sz)) 0))
+                      (hash-update! sender-accounts from
+                                   (lambda (s) (set-add s account))
+                                   (set)))))))))))
     (let ([sorted (if (eq? sort-by 'size)
                       (sort (hash->list sender-counts) >
                             #:key (lambda (p) (hash-ref sender-sizes (car p) 0)))
@@ -261,7 +261,7 @@
               (printf "~n  ~a senders shown (~a total messages, ~a)~n"
                       (length filtered) total-msgs (format-size total-sz))
               (printf "~n  ~a senders shown (~a total messages)~n"
-                      (length filtered) total-msgs)))))))
+                      (length filtered) total-msgs))))))
 
 ;; ---- from-address mode: show details for one sender ----
 
@@ -487,13 +487,14 @@
         [sender-sizes (make-hash)])
     (for ([mbd (inbox-digests digests)])
       (for ([hdr (mailbox-digest-mail-headers mbd)])
-        (when (date-matches? hdr year-filter since-filter before-filter)
-          (let ([from (extract-from-addr (main-mail-header-parts-from hdr))]
-                [sz (main-mail-header-parts-message-size hdr)])
-            (unless (set-member? known-set from)
-              (hash-update! sender-counts from add1 0)
-              (when sz
-                (hash-update! sender-sizes from (lambda (v) (+ v sz)) 0)))))))
+        (unless (main-mail-header-parts-deleted? hdr)
+          (when (date-matches? hdr year-filter since-filter before-filter)
+            (let ([from (extract-from-addr (main-mail-header-parts-from hdr))]
+                  [sz (main-mail-header-parts-message-size hdr)])
+              (unless (set-member? known-set from)
+                (hash-update! sender-counts from add1 0)
+                (when sz
+                  (hash-update! sender-sizes from (lambda (v) (+ v sz)) 0))))))))
     (let* ([all-pairs (hash->list sender-counts)]
            [filtered (filter (lambda (p) (>= (cdr p) min-count)) all-pairs)]
            [sorted (if (eq? sort-by 'size)
@@ -598,14 +599,15 @@
             (let ([sender-msgs (make-hash)])  ;; sender -> list of (uid epoch)
               ;; Collect messages per sender for this folder
               (for ([hdr (mailbox-digest-mail-headers mbd)])
-                (let ([from (extract-from-addr (main-mail-header-parts-from hdr))])
-                  (when (and (set-member? sender-set from)
-                             (date-matches? hdr year-filter since-filter before-filter))
-                    (let ([uid (main-mail-header-parts-mail-id hdr)]
-                          [epoch (or (main-mail-header-parts-parsed-epoch hdr) 0)])
-                      (hash-update! sender-msgs from
-                                    (lambda (lst) (cons (list uid epoch) lst))
-                                    '())))))
+                (unless (main-mail-header-parts-deleted? hdr)
+                  (let ([from (extract-from-addr (main-mail-header-parts-from hdr))])
+                    (when (and (set-member? sender-set from)
+                               (date-matches? hdr year-filter since-filter before-filter))
+                      (let ([uid (main-mail-header-parts-mail-id hdr)]
+                            [epoch (or (main-mail-header-parts-parsed-epoch hdr) 0)])
+                        (hash-update! sender-msgs from
+                                      (lambda (lst) (cons (list uid epoch) lst))
+                                      '()))))))
 
               ;; For each sender in this folder, determine which UIDs to delete
               (for ([(sender msgs) (in-hash sender-msgs)])

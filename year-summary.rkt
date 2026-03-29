@@ -38,25 +38,39 @@
 (define (count-by-year digests)
   (let ([year-counts (make-hash)]
         [year-sizes (make-hash)]
+        [year-del-counts (make-hash)]
+        [year-del-sizes (make-hash)]
         [total 0]
         [total-size 0]
+        [total-deleted 0]
+        [total-deleted-size 0]
         [no-year 0]
         [has-sizes? #f])
     (for ([mbd digests])
       (for ([hdr (mailbox-digest-mail-headers mbd)])
-        (set! total (add1 total))
         (let ([yr (main-mail-header-parts-parsed-year hdr)]
-              [sz (main-mail-header-parts-message-size hdr)])
-          (when sz
-            (set! has-sizes? #t)
-            (set! total-size (+ total-size sz)))
-          (if yr
+              [sz (main-mail-header-parts-message-size hdr)]
+              [deleted? (main-mail-header-parts-deleted? hdr)])
+          (when sz (set! has-sizes? #t))
+          (if deleted?
               (begin
-                (hash-update! year-counts yr add1 0)
-                (when sz
-                  (hash-update! year-sizes yr (lambda (v) (+ v sz)) 0)))
-              (set! no-year (add1 no-year))))))
-    (values year-counts year-sizes total total-size no-year has-sizes?)))
+                (set! total-deleted (add1 total-deleted))
+                (when sz (set! total-deleted-size (+ total-deleted-size sz)))
+                (when yr
+                  (hash-update! year-del-counts yr add1 0)
+                  (when sz
+                    (hash-update! year-del-sizes yr (lambda (v) (+ v sz)) 0))))
+              (begin
+                (set! total (add1 total))
+                (when sz (set! total-size (+ total-size sz)))
+                (if yr
+                    (begin
+                      (hash-update! year-counts yr add1 0)
+                      (when sz
+                        (hash-update! year-sizes yr (lambda (v) (+ v sz)) 0)))
+                    (set! no-year (add1 no-year))))))))
+    (values year-counts year-sizes total total-size no-year has-sizes?
+            year-del-counts year-del-sizes total-deleted total-deleted-size)))
 
 (define (count-by-year-per-account digests)
   (let ([account-years (make-hash)]
@@ -64,18 +78,19 @@
     (for ([mbd digests])
       (let ([email (mailbox-digest-mail-address mbd)])
         (for ([hdr (mailbox-digest-mail-headers mbd)])
-          (let ([yr (main-mail-header-parts-parsed-year hdr)]
-                [sz (main-mail-header-parts-message-size hdr)])
-            (when yr
-              (hash-update!
-               account-years email
-               (lambda (yh) (hash-update! yh yr add1 0) yh)
-               (lambda () (make-hash)))
-              (when sz
+          (unless (main-mail-header-parts-deleted? hdr)
+            (let ([yr (main-mail-header-parts-parsed-year hdr)]
+                  [sz (main-mail-header-parts-message-size hdr)])
+              (when yr
                 (hash-update!
-                 account-sizes email
-                 (lambda (yh) (hash-update! yh yr (lambda (v) (+ v sz)) 0) yh)
-                 (lambda () (make-hash)))))))))
+                 account-years email
+                 (lambda (yh) (hash-update! yh yr add1 0) yh)
+                 (lambda () (make-hash)))
+                (when sz
+                  (hash-update!
+                   account-sizes email
+                   (lambda (yh) (hash-update! yh yr (lambda (v) (+ v sz)) 0) yh)
+                   (lambda () (make-hash))))))))))
     (values account-years account-sizes)))
 
 ;; ---- formatting ----
@@ -189,10 +204,14 @@
       (exit 0))
 
     ;; Always show combined summary
-    (let-values ([(year-counts year-sizes total total-size no-year has-sizes?)
+    (let-values ([(year-counts year-sizes total total-size no-year has-sizes?
+                   year-del-counts year-del-sizes total-deleted total-deleted-size)
                   (count-by-year digests)])
       (print-year-table year-counts year-sizes total total-size no-year has-sizes?
                         #:bars bars)
+      (when (> total-deleted 0)
+        (printf "~n  Excluded ~a deleted messages (~a)~n"
+                total-deleted (format-size total-deleted-size)))
       (unless has-sizes?
         (printf "~n  (Run 'racket fetch-sizes.rkt' to add size data)~n")))
 

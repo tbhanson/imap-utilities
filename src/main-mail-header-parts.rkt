@@ -33,6 +33,9 @@
 
   ;; converter: raw IMAP message -> our struct
   [mail-header->main-mail-header-parts (-> (and/c pair? list?) main-mail-header-parts?)]
+
+  ;; tombstone check
+  [main-mail-header-parts-deleted? (-> main-mail-header-parts? boolean?)]
   )
  
  ;; constants
@@ -106,3 +109,9 @@
      year
      epoch
      #f)))  ; message-size — populated separately via raw IMAP
+
+;; Check whether a message has been tombstoned (deleted on IMAP server
+;; but still present in the local digest for bookkeeping).
+(define (main-mail-header-parts-deleted? hdr)
+  (and (member '|$DeletedOnIMAPServer| (main-mail-header-parts-flags hdr))
+       #t))

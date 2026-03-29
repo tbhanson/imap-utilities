@@ -7,6 +7,7 @@
 ;;   racket purge-candidates.rkt
 ;;   racket purge-candidates.rkt --min 50          ; only senders with 50+ messages
 ;;   racket purge-candidates.rkt --before 2023-01-01  ; only count old messages
+;;   racket purge-candidates.rkt --after 2019-01-01 --before 2020-01-01  ; one year
 ;;   racket purge-candidates.rkt --year 2020       ; only count messages from 2020
 ;;   racket purge-candidates.rkt --sort size       ; sort by total size instead of count
 ;;   racket purge-candidates.rkt --account tbh361  ; only this account (substring match)
@@ -15,17 +16,21 @@
 ;;   racket purge-candidates.rkt --from noreply@github.com
 ;;   racket purge-candidates.rkt --from noreply@github.com --before 2024-01-01
 ;;
-;;   # Actually delete (connects to IMAP, interactive prompts):
+;;   # Delete a single sender (connects to IMAP, interactive prompts):
 ;;   racket purge-candidates.rkt --from noreply@github.com --delete
 ;;   racket purge-candidates.rkt --from noreply@github.com --delete -y
 ;;   racket purge-candidates.rkt --from noreply@github.com --before 2024-01-01 --delete
 ;;
-;; The report mode (no --from) is purely local — it scans digests only.
-;; The --from mode with --delete connects live to IMAP servers.
+;;   # Batch delete ALL unknown senders matching filters:
+;;   racket purge-candidates.rkt --account tbh361 --min 100 --delete-all -y
+;;   racket purge-candidates.rkt --account tbh361 --min 50 --after 2019-01-01 --before 2020-01-01 --delete-all -y
+;;   racket purge-candidates.rkt --account tbh361 --min 10 --delete-all --keep 2 -y
 ;;
-;; Date filters (--year, --since, --before) apply in both modes:
-;; in report mode they filter which messages are counted; in --from
-;; mode they filter which messages are shown/deleted.
+;; The report mode (no --from/--delete-all) is purely local — it scans digests only.
+;; The --from --delete and --delete-all modes connect live to IMAP servers.
+;;
+;; Date filters (--year, --after/--since, --before) apply in all modes.
+;; --keep N retains the N newest messages per sender (by epoch/date).
 
 (require
   "src/imap-email-account-credentials.rkt"
@@ -205,7 +210,7 @@
         (when year-filter
           (printf "  (filtered to year ~a)~n" year-filter))
         (when since-filter
-          (printf "  (filtered to since ~a)~n" (~t since-filter "yyyy-MM-dd")))
+          (printf "  (filtered to after ~a)~n" (~t since-filter "yyyy-MM-dd")))
         (when before-filter
           (printf "  (filtered to before ~a)~n" (~t before-filter "yyyy-MM-dd")))
         (when (> min-count 1)
@@ -471,6 +476,186 @@
 
         (imap-disconnect imap-conn)))))
 
+;; ---- delete-all mode: batch purge across all matching senders ----
+
+;; Collect all unknown senders matching filters from digests.
+;; Returns a list of (sender . count) pairs, sorted by sort-by.
+(define (collect-purge-senders digests known-set
+                                year-filter since-filter before-filter
+                                min-count sort-by)
+  (let ([sender-counts (make-hash)]
+        [sender-sizes (make-hash)])
+    (for ([mbd (inbox-digests digests)])
+      (for ([hdr (mailbox-digest-mail-headers mbd)])
+        (when (date-matches? hdr year-filter since-filter before-filter)
+          (let ([from (extract-from-addr (main-mail-header-parts-from hdr))]
+                [sz (main-mail-header-parts-message-size hdr)])
+            (unless (set-member? known-set from)
+              (hash-update! sender-counts from add1 0)
+              (when sz
+                (hash-update! sender-sizes from (lambda (v) (+ v sz)) 0)))))))
+    (let* ([all-pairs (hash->list sender-counts)]
+           [filtered (filter (lambda (p) (>= (cdr p) min-count)) all-pairs)]
+           [sorted (if (eq? sort-by 'size)
+                       (sort filtered >
+                             #:key (lambda (p) (hash-ref sender-sizes (car p) 0)))
+                       (sort filtered > #:key cdr))])
+      (values sorted sender-sizes))))
+
+;; For --keep N: collect UIDs for a sender from digests, sorted newest first.
+;; Returns list of (uid . epoch) pairs for the given sender matching date filters.
+(define (sender-uids-by-recency digests target-from
+                                 year-filter since-filter before-filter)
+  (let ([uid-epochs '()])
+    (for ([mbd (inbox-digests digests)])
+      (for ([hdr (mailbox-digest-mail-headers mbd)])
+        (let ([from (extract-from-addr (main-mail-header-parts-from hdr))])
+          (when (and (string=? from target-from)
+                     (date-matches? hdr year-filter since-filter before-filter))
+            (let ([uid (main-mail-header-parts-mail-id hdr)]
+                  [epoch (or (main-mail-header-parts-parsed-epoch hdr) 0)]
+                  [email (mailbox-digest-mail-address mbd)]
+                  [folder (mailbox-digest-folder-name mbd)])
+              (set! uid-epochs
+                    (cons (list uid epoch email folder) uid-epochs)))))))
+    ;; Sort newest first
+    (sort uid-epochs > #:key second)))
+
+;; Find sequence numbers on IMAP for specific UIDs.
+;; Returns list of (seqno . uid) pairs for UIDs that exist.
+(define (find-seqnos-for-uids imap-conn target-uids msg-count)
+  (let ([uid-set (list->set target-uids)]
+        [batch-size 200]
+        [matches '()])
+    (let loop ([start 1])
+      (if (> start msg-count)
+          (reverse matches)
+          (let* ([end (min msg-count (+ start batch-size -1))]
+                 [indices (for/list ([i (in-range start (+ end 1))]) i)]
+                 [results (imap-get-messages imap-conn indices '(uid))])
+            (for ([result results]
+                  [seqno (in-range start (+ end 1))])
+              (let ([uid (first result)])
+                (when (set-member? uid-set uid)
+                  (set! matches (cons (cons seqno uid) matches)))))
+            (loop (+ end 1)))))))
+
+;; Execute batch deletion for all matching senders.
+(define (execute-delete-all digests known-set
+                             year-filter since-filter before-filter
+                             min-count sort-by keep-count auto-confirm?)
+  (let-values ([(senders sender-sizes)
+                (collect-purge-senders digests known-set
+                                       year-filter since-filter before-filter
+                                       min-count sort-by)])
+    (when (null? senders)
+      (printf "No senders match the filters.~n")
+      (exit 0))
+
+    ;; Show what we're about to do
+    (let ([total-msgs (for/sum ([p senders]) (cdr p))]
+          [total-sz (for/sum ([p senders]) (hash-ref sender-sizes (car p) 0))])
+      (printf "~nBatch delete plan:~n")
+      (printf "  ~a senders, ~a messages" (length senders) total-msgs)
+      (when (> total-sz 0) (printf ", ~a" (format-size total-sz)))
+      (newline)
+      (when keep-count
+        (printf "  Keeping ~a newest message(s) per sender~n" keep-count))
+      (printf "~n")
+
+      ;; Show first few senders
+      (let ([preview (take senders (min 10 (length senders)))])
+        (for ([p preview])
+          (let ([sz (hash-ref sender-sizes (car p) 0)])
+            (printf "  ~a  ~a  ~a~n"
+                    (~a (cdr p) #:min-width 7 #:align 'right)
+                    (~a (if (> sz 0) (format-size sz) "-") #:min-width 10 #:align 'right)
+                    (car p))))
+        (when (> (length senders) 10)
+          (printf "  ... and ~a more senders~n" (- (length senders) 10))))
+
+      ;; Confirm
+      (unless auto-confirm?
+        (printf "~nProceed with deletion? [y/N] ")
+        (flush-output)
+        (let ([answer (read-line)])
+          (unless (and answer (regexp-match? #rx"^[yY]" answer))
+            (printf "Aborted.~n")
+            (exit 0)))))
+
+    ;; Load credentials
+    (let ([creds (load-credentials)])
+
+      ;; Group work by account+folder to minimize IMAP connections
+      ;; Build a hash: (email . folder) -> list of (sender uid epoch)
+      (let ([work-by-folder (make-hash)]
+            [sender-set (list->set (map car senders))])
+
+        ;; Collect all UIDs to delete, respecting --keep
+        (for ([mbd (inbox-digests digests)])
+          (let ([email (mailbox-digest-mail-address mbd)]
+                [folder (mailbox-digest-folder-name mbd)])
+            (let ([sender-msgs (make-hash)])  ;; sender -> list of (uid epoch)
+              ;; Collect messages per sender for this folder
+              (for ([hdr (mailbox-digest-mail-headers mbd)])
+                (let ([from (extract-from-addr (main-mail-header-parts-from hdr))])
+                  (when (and (set-member? sender-set from)
+                             (date-matches? hdr year-filter since-filter before-filter))
+                    (let ([uid (main-mail-header-parts-mail-id hdr)]
+                          [epoch (or (main-mail-header-parts-parsed-epoch hdr) 0)])
+                      (hash-update! sender-msgs from
+                                    (lambda (lst) (cons (list uid epoch) lst))
+                                    '())))))
+
+              ;; For each sender in this folder, determine which UIDs to delete
+              (for ([(sender msgs) (in-hash sender-msgs)])
+                (let* ([sorted-msgs (sort msgs > #:key second)]  ;; newest first
+                       [to-delete (if keep-count
+                                      (drop sorted-msgs (min keep-count (length sorted-msgs)))
+                                      sorted-msgs)])
+                  (when (not (null? to-delete))
+                    (let ([key (cons email folder)])
+                      (hash-update! work-by-folder key
+                                    (lambda (lst) (append (map first to-delete) lst))
+                                    '()))))))))
+
+        ;; Now connect to each account+folder and delete
+        (let ([total-deleted 0])
+          (for ([(key uids) (in-hash work-by-folder)])
+            (let ([email (car key)]
+                  [folder (cdr key)])
+              (printf "~n~a / ~a: ~a messages to delete~n" email folder (length uids))
+              (let ([credential (email->credential creds email)])
+                (if (not credential)
+                    (printf "  WARNING: no credential found for ~a, skipping.~n" email)
+                    (with-handlers
+                        ([exn:fail?
+                          (lambda (e)
+                            (printf "  ERROR: ~a~n" (exn-message e)))])
+                      (let* ([imap-conn (connect-to credential folder)]
+                             [msg-count (imap-messages imap-conn)]
+                             [uid-seqno-pairs (find-seqnos-for-uids
+                                               imap-conn uids msg-count)])
+                        (if (null? uid-seqno-pairs)
+                            (printf "  No matching messages found on server.~n")
+                            (begin
+                              (printf "  Found ~a message(s) on server, deleting...~n"
+                                      (length uid-seqno-pairs))
+                              (let ([seqnos (map car uid-seqno-pairs)])
+                                (imap-store imap-conn '+ (sort seqnos >)
+                                            (list (symbol->imap-flag 'deleted)))
+                                (imap-expunge imap-conn))
+                              (set! total-deleted (+ total-deleted
+                                                     (length uid-seqno-pairs)))
+                              (printf "  Deleted and expunged ~a message(s).~n"
+                                      (length uid-seqno-pairs))
+                              (mark-deleted-in-digest email folder
+                                                      (map cdr uid-seqno-pairs))))
+                        (imap-disconnect imap-conn)))))))
+          (printf "~n========================================~n")
+          (printf "Total deleted: ~a messages~n" total-deleted)
+          (printf "========================================~n"))))))
+
 ;; ---- arg parsing ----
 
 (define (parse-args args)
@@ -481,9 +666,11 @@
         [before-filter #f]
         [min-count 2]
         [delete? #f]
+        [delete-all? #f]
         [auto-confirm? #f]
         [sort-by 'count]
-        [account-filter #f])
+        [account-filter #f]
+        [keep-count #f])
     (let loop ([remaining arg-list])
       (cond
         [(null? remaining) (void)]
@@ -495,7 +682,8 @@
               (not (null? (cdr remaining))))
          (set! year-filter (string->number (cadr remaining)))
          (loop (cddr remaining))]
-        [(and (string=? (car remaining) "--since")
+        [(and (or (string=? (car remaining) "--since")
+                  (string=? (car remaining) "--after"))
               (not (null? (cdr remaining))))
          (set! since-filter (parse-date-arg (cadr remaining)))
          (loop (cddr remaining))]
@@ -515,8 +703,15 @@
               (not (null? (cdr remaining))))
          (set! account-filter (string-downcase (cadr remaining)))
          (loop (cddr remaining))]
+        [(and (string=? (car remaining) "--keep")
+              (not (null? (cdr remaining))))
+         (set! keep-count (string->number (cadr remaining)))
+         (loop (cddr remaining))]
         [(string=? (car remaining) "--delete")
          (set! delete? #t)
+         (loop (cdr remaining))]
+        [(string=? (car remaining) "--delete-all")
+         (set! delete-all? #t)
          (loop (cdr remaining))]
         [(or (string=? (car remaining) "--yes")
              (string=? (car remaining) "-y"))
@@ -524,13 +719,15 @@
          (loop (cdr remaining))]
         [else (loop (cdr remaining))]))
     (values from-filter year-filter since-filter before-filter
-            min-count delete? auto-confirm? sort-by account-filter)))
+            min-count delete? delete-all? auto-confirm? sort-by
+            account-filter keep-count)))
 
 ;; ---- main ----
 
 (define (main)
   (let-values ([(from-filter year-filter since-filter before-filter
-                 min-count delete? auto-confirm? sort-by account-filter)
+                 min-count delete? delete-all? auto-confirm? sort-by
+                 account-filter keep-count)
                 (parse-args (current-command-line-arguments))])
 
     (let ([known-set (load-known-contacts (default-known-contacts-filepath))]
@@ -557,6 +754,12 @@
           (printf "Filtered to account(s) matching '~a'~n" account-filter))
 
       (cond
+        ;; Mode 4: Batch delete all matching senders
+        [delete-all?
+         (execute-delete-all digests known-set
+                             year-filter since-filter before-filter
+                             min-count sort-by keep-count auto-confirm?)]
+
         ;; Mode 1: Report — list unknown senders by message count
         [(not from-filter)
          (report-purge-candidates digests known-set

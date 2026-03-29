@@ -163,7 +163,8 @@
               (not (null? (cdr remaining))))
          (set! year-filter (string->number (cadr remaining)))
          (loop (cddr remaining))]
-        [(and (string=? (car remaining) "--since")
+        [(and (or (string=? (car remaining) "--since")
+                  (string=? (car remaining) "--after"))
               (not (null? (cdr remaining))))
          (set! since-filter (parse-date-arg (cadr remaining)))
          (loop (cddr remaining))]

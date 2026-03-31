@@ -192,7 +192,7 @@
                                      (lambda (v) (+ v sz)) 0))
                       (hash-update! sender-accounts from
                                    (lambda (s) (set-add s account))
-                                   (set)))))))))))
+                                   (set))))))))))
     (let ([sorted (if (eq? sort-by 'size)
                       (sort (hash->list sender-counts) >
                             #:key (lambda (p) (hash-ref sender-sizes (car p) 0)))
@@ -261,7 +261,7 @@
               (printf "~n  ~a senders shown (~a total messages, ~a)~n"
                       (length filtered) total-msgs (format-size total-sz))
               (printf "~n  ~a senders shown (~a total messages)~n"
-                      (length filtered) total-msgs))))))
+                      (length filtered) total-msgs)))))))
 
 ;; ---- from-address mode: show details for one sender ----
 

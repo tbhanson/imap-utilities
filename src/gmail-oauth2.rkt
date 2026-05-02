@@ -86,7 +86,7 @@
 ;; Google's redirect with the authorization code.
 ;; Uses a simple TCP listener instead of serve/servlet so we can
 ;; cleanly shut down the port between auth attempts.
-(define (get-authorization-code client-id redirect-uri)
+(define (get-authorization-code client-id redirect-uri [email-address #f])
   (let ([auth-code-channel (make-channel)]
         [port-no (let ([m (regexp-match #rx":([0-9]+)" redirect-uri)])
                    (if m (string->number (second m)) 8080))])
@@ -119,7 +119,8 @@
 
         ;; Open the user's browser
         (let ([auth-url (build-authorization-url client-id redirect-uri)])
-          (printf "~nOpening your browser for Google authorization...~n")
+          (printf "~nOpening your browser for Google authorization~a...~n"
+                  (if email-address (format " for ~a" email-address) ""))
           (printf "If it doesn't open automatically, visit this URL:~n~a~n~n" auth-url)
           (with-handlers ([exn:fail? (lambda (e)
                                        (printf "(Could not open browser automatically.)~n"))])
@@ -169,8 +170,9 @@
             (printf "Token exchange failed: ~a~n" json-response)
             #f)))))
 
-(define (refresh-access-token refresh-token client-id client-secret)
-  (printf "Refreshing access token...~n")
+(define (refresh-access-token refresh-token client-id client-secret [email-address #f])
+  (printf "Refreshing access token~a...~n"
+          (if email-address (format " for ~a" email-address) ""))
   (let* ([post-data
           (alist->form-urlencoded
            (list (cons 'client_id client-id)
@@ -189,7 +191,9 @@
                 'expires_at (+ (current-seconds)
                                (hash-ref json-response 'expires_in 3600)))
           (begin
-            (printf "Token refresh failed: ~a~n" json-response)
+            (printf "Token refresh failed~a: ~a~n"
+                    (if email-address (format " for ~a" email-address) "")
+                    json-response)
             #f)))))
 
 ;; ---- main entry point ----
@@ -203,7 +207,7 @@
         [redirect-uri (oauth2-details-redirect-uri oauth2-creds)])
 
     (define (do-fresh-auth)
-      (let ([auth-code (get-authorization-code client-id redirect-uri)])
+      (let ([auth-code (get-authorization-code client-id redirect-uri email-address)])
         (let ([tokens (exchange-code-for-tokens auth-code client-id client-secret redirect-uri)])
           (when tokens
             (save-tokens! email-address tokens))
@@ -225,7 +229,8 @@
       [(and (hash? saved) (hash-ref saved 'refresh_token #f))
        (let ([refreshed (refresh-access-token
                          (hash-ref saved 'refresh_token)
-                         client-id client-secret)])
+                         client-id client-secret
+                         email-address)])
          (if refreshed
              (begin (save-tokens! email-address refreshed) refreshed)
              ;; Refresh failed — need fresh auth

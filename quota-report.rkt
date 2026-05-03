@@ -20,12 +20,12 @@
          json
          "src/imap-email-account-credentials.rkt"
          "src/gmail-oauth2.rkt"
-         "src/oauth2-details.rkt")
+         "src/oauth2-details.rkt"
+         "src/utils.rkt")
+
+(handle-broken-pipe)
 
 ;; ---- credentials ----
-
-(define (default-credentials-filepath)
-  (build-path (find-system-path 'home-dir) ".imap_secrets" "credentials"))
 
 (define (load-credentials)
   (read-email-account-credentials-hash-from-file-named
@@ -166,12 +166,6 @@
 
 
 ;; ---- formatting ----
-
-(define (format-size-kb kb)
-  (cond
-    [(>= kb (* 1024 1024)) (format "~a GB" (~r (/ kb 1024.0 1024.0) #:precision '(= 2)))]
-    [(>= kb 1024)           (format "~a MB" (~r (/ kb 1024.0) #:precision '(= 1)))]
-    [else                    (format "~a KB" kb)]))
 
 (define (format-pct used limit)
   (if (= limit 0) "N/A" (format "~a%" (~r (* 100.0 (/ used limit)) #:precision '(= 1)))))

@@ -11,7 +11,10 @@
 (require
   "src/mailbox-digest.rkt"
   "src/main-mail-header-parts.rkt"
+  "src/utils.rkt"
   gregor)
+
+(handle-broken-pipe)
 
 ;; ---- digest loading ----
 
@@ -92,15 +95,6 @@
                    (lambda (yh) (hash-update! yh yr (lambda (v) (+ v sz)) 0) yh)
                    (lambda () (make-hash))))))))))
     (values account-years account-sizes)))
-
-;; ---- formatting ----
-
-(define (format-size bytes)
-  (cond
-    [(>= bytes (* 1024 1024 1024)) (format "~a GB" (~r (/ bytes 1024.0 1024.0 1024.0) #:precision '(= 2)))]
-    [(>= bytes (* 1024 1024))      (format "~a MB" (~r (/ bytes 1024.0 1024.0) #:precision '(= 1)))]
-    [(>= bytes 1024)               (format "~a KB" (~r (/ bytes 1024.0) #:precision '(= 0)))]
-    [else                           (format "~a B" bytes)]))
 
 ;; ---- display ----
 

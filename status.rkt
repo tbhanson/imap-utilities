@@ -17,25 +17,16 @@
   "src/mailbox-digest.rkt"
   "src/main-mail-header-parts.rkt"
   "src/known-contacts.rkt"
+  "src/utils.rkt"
   net/head
   gregor)
 
+(handle-broken-pipe)
+
 ;; ---- paths ----
 
-(define (default-secrets-dir)
-  (build-path (find-system-path 'home-dir) ".imap_secrets"))
-
-(define (default-digest-dir)
-  (build-path (default-secrets-dir) "digests"))
-
-(define (default-visits-filepath)
-  (build-path (default-secrets-dir) "status-visits.txt"))
-
-(define (default-known-contacts-filepath)
-  (build-path (default-secrets-dir) "known-contacts"))
-
-(define (default-derived-contacts-filepath)
-  (build-path (default-secrets-dir) "derived-contacts.txt"))
+;; Visit history is status-specific; not in utils since no other tool uses it.
+(define (default-visits-filepath) (default-status-visits-filepath))
 
 ;; ---- visit history ----
 
@@ -137,14 +128,6 @@
     (set-union known derived)))
 
 ;; ---- formatting helpers ----
-
-(define (format-size bytes)
-  (cond
-    [(or (not bytes) (= bytes 0)) "-"]
-    [(>= bytes (* 1024 1024 1024)) (format "~a GB" (~r (/ bytes 1024.0 1024.0 1024.0) #:precision '(= 2)))]
-    [(>= bytes (* 1024 1024))      (format "~a MB" (~r (/ bytes 1024.0 1024.0) #:precision '(= 1)))]
-    [(>= bytes 1024)               (format "~a KB" (~r (/ bytes 1024.0) #:precision '(= 0)))]
-    [else                           (format "~a B" bytes)]))
 
 (define (extract-from-addr from-str)
   (with-handlers ([exn:fail? (lambda (e) "")])

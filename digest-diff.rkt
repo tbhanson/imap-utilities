@@ -15,12 +15,12 @@
 (require
   "src/mailbox-digest.rkt"
   "src/main-mail-header-parts.rkt"
+  "src/utils.rkt"
   gregor)
 
-;; ---- digest loading ----
+(handle-broken-pipe)
 
-(define (default-digest-dir)
-  (build-path (find-system-path 'home-dir) ".imap_secrets" "digests"))
+;; ---- digest loading ----
 
 ;; Returns hash: (email . folder) -> (list digest-path ...) sorted oldest first
 (define (load-all-digests-grouped)
@@ -46,21 +46,8 @@
 
 ;; ---- formatting ----
 
-(define (format-size bytes)
-  (cond
-    [(not bytes) "-"]
-    [(>= bytes (* 1024 1024 1024)) (format "~a GB" (~r (/ bytes 1024.0 1024.0 1024.0) #:precision '(= 2)))]
-    [(>= bytes (* 1024 1024))      (format "~a MB" (~r (/ bytes 1024.0 1024.0) #:precision '(= 1)))]
-    [(>= bytes 1024)               (format "~a KB" (~r (/ bytes 1024.0) #:precision '(= 0)))]
-    [else                           (format "~a B" bytes)]))
-
 (define (format-timestamp dt)
   (~t dt "yyyy-MM-dd HH:mm"))
-
-(define (truncate-string s max-len)
-  (if (<= (string-length s) max-len)
-      s
-      (string-append (substring s 0 (- max-len 3)) "...")))
 
 ;; ---- diffing ----
 

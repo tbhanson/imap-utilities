@@ -32,7 +32,7 @@
   (build-path (default-secrets-dir) "status-visits.txt"))
 
 (define (default-known-contacts-filepath)
-  (build-path (default-secrets-dir) "known-contacts.txt"))
+  (build-path (default-secrets-dir) "known-contacts"))
 
 (define (default-derived-contacts-filepath)
   (build-path (default-secrets-dir) "derived-contacts.txt"))

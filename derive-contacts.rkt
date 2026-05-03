@@ -129,6 +129,41 @@
         (printf "~nTotal unique addresses across all sent folders: ~a~n"
                 (set-count all-addresses))
 
+        ;; Per-account analysis: how many addresses are unique to each account?
+        (let ([by-email (make-hash)])
+          ;; Collapse per-folder hash into per-email-account hash
+          (for ([(key addrs) (in-hash per-account)])
+            (let ([email (car key)])
+              (hash-update! by-email email
+                            (lambda (existing)
+                              (let ([combined (mutable-set)])
+                                (for ([a (in-set existing)]) (set-add! combined a))
+                                (for ([a (in-set addrs)]) (set-add! combined a))
+                                combined))
+                            (mutable-set))))
+          (printf "~nPer-account analysis:~n")
+          (printf "  ~a  ~a  ~a~n"
+                  (~a "Account" #:min-width 32)
+                  (~a "Total addrs" #:min-width 12 #:align 'right)
+                  (~a "Unique to this account" #:min-width 24 #:align 'right))
+          (printf "  ~a  ~a  ~a~n"
+                  (make-string 32 #\-) (make-string 12 #\-) (make-string 24 #\-))
+          (for ([email (sort (hash-keys by-email) string<?)])
+            (let* ([this-set (hash-ref by-email email)]
+                   ;; Build a set of addresses from all OTHER accounts
+                   [others (mutable-set)])
+              (for ([(other-email other-set) (in-hash by-email)])
+                (unless (string=? other-email email)
+                  (for ([a (in-set other-set)])
+                    (set-add! others a))))
+              (let ([unique-here
+                     (for/sum ([a (in-set this-set)])
+                       (if (set-member? others a) 0 1))])
+                (printf "  ~a  ~a  ~a~n"
+                        (~a email #:min-width 32)
+                        (~a (set-count this-set) #:min-width 12 #:align 'right)
+                        (~a unique-here #:min-width 24 #:align 'right))))))
+
         (when write?
           (let ([path (default-derived-contacts-filepath)])
             (call-with-output-file path

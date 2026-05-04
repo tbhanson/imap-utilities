@@ -16,26 +16,6 @@
 
 (handle-broken-pipe)
 
-;; ---- digest loading ----
-
-(define (load-all-latest-digests)
-  (let ([dir (default-digest-dir)])
-    (if (directory-exists? dir)
-        (let ([by-key (make-hash)])
-          (for ([f (directory-list dir #:build? #t)]
-                #:when (regexp-match? #rx"\\.ser$" (path->string f)))
-            (with-handlers ([exn:fail? (lambda (e) (void))])
-              (let* ([mbd (load-mailbox-digest-from-file f)]
-                     [key (cons (mailbox-digest-mail-address mbd)
-                                (mailbox-digest-folder-name mbd))])
-                (let ([existing (hash-ref by-key key #f)])
-                  (when (or (not existing)
-                            (datetime>? (mailbox-digest-timestamp mbd)
-                                        (mailbox-digest-timestamp existing)))
-                    (hash-set! by-key key mbd))))))
-          (hash-values by-key))
-        '())))
-
 ;; ---- counting ----
 
 (define (count-by-year digests)

@@ -18,44 +18,8 @@
   "src/mailbox-digest.rkt"
   "src/main-mail-header-parts.rkt"
   net/head
-  gregor)
-
-;; ---- digest loading ----
-
-(define (default-digest-dir)
-  (build-path (find-system-path 'home-dir) ".imap_secrets" "digests"))
-
-(define (default-derived-contacts-filepath)
-  (build-path (find-system-path 'home-dir) ".imap_secrets"
-              "derived-contacts.txt"))
-
-(define (load-all-latest-digests)
-  (let ([dir (default-digest-dir)])
-    (if (directory-exists? dir)
-        (let ([by-key (make-hash)])
-          (for ([f (directory-list dir #:build? #t)]
-                #:when (regexp-match? #rx"\\.ser$" (path->string f)))
-            (with-handlers ([exn:fail? (lambda (e) (void))])
-              (let* ([mbd (load-mailbox-digest-from-file f)]
-                     [key (cons (mailbox-digest-mail-address mbd)
-                                (mailbox-digest-folder-name mbd))])
-                (let ([existing (hash-ref by-key key #f)])
-                  (when (or (not existing)
-                            (datetime>? (mailbox-digest-timestamp mbd)
-                                        (mailbox-digest-timestamp existing)))
-                    (hash-set! by-key key mbd))))))
-          (hash-values by-key))
-        '())))
-
-;; A digest is for a Sent folder if its folder name matches common
-;; Sent-folder patterns across IMAP servers and Gmail localizations.
-(define sent-folder-rx
-  #rx"(?i:sent|gesendet|envoy|inviati|enviados|verzonden)")
-
-(define (sent-digests digests)
-  (filter (lambda (mbd)
-            (regexp-match? sent-folder-rx (mailbox-digest-folder-name mbd)))
-          digests))
+  gregor
+  "src/utils.rkt")
 
 ;; ---- address extraction ----
 
@@ -115,7 +79,16 @@
       (let ([all-addresses (mutable-set)]
             [per-account (make-hash)])
 
-        (for ([mbd sent])
+        (for ([mbd (sort sent
+                          (lambda (a b)
+                            (let ([ae (mailbox-digest-mail-address a)]
+                                  [be (mailbox-digest-mail-address b)])
+                              (cond
+                                [(string<? ae be) #t]
+                                [(string>? ae be) #f]
+                                [else
+                                 (string<? (mailbox-digest-folder-name a)
+                                           (mailbox-digest-folder-name b))]))))])
           (let* ([email (mailbox-digest-mail-address mbd)]
                  [folder (mailbox-digest-folder-name mbd)]
                  [addrs (addresses-from-sent-digest mbd)])

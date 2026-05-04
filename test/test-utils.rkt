@@ -83,4 +83,58 @@
      ;; Just verify the function can be called without exploding.
      ;; We can't really test EPIPE behavior in a unit test.
      (check-not-exn handle-broken-pipe)))
+
+  (test-suite
+   "extract-from-addr"
+   (test-case "name and address in angle brackets"
+     (check-equal? (extract-from-addr "Foo Bar <foo@example.com>")
+                   "foo@example.com"))
+   (test-case "bare address"
+     (check-equal? (extract-from-addr "foo@example.com")
+                   "foo@example.com"))
+   (test-case "address is lowercased"
+     (check-equal? (extract-from-addr "FOO@EXAMPLE.COM")
+                   "foo@example.com")
+     (check-equal? (extract-from-addr "Mixed <MiXeD@Example.COM>")
+                   "mixed@example.com"))
+   (test-case "empty string yields empty"
+     (check-equal? (extract-from-addr "") ""))
+   (test-case "garbage yields empty"
+     (check-equal? (extract-from-addr "no email here at all") "")))
+
+  (test-suite
+   "load-all-latest-digests"
+   (test-case "returns empty list for nonexistent directory"
+     (check-equal?
+      (load-all-latest-digests (build-path "/" "nonexistent" "digest" "dir"))
+      '())))
+
+  (test-suite
+   "inbox-digests / sent-digests"
+   ;; We can test the regexes against folder name strings without
+   ;; actually constructing mailbox-digest structs by using fakes.
+   ;; Instead we just exercise the regex internally.
+   (test-case "INBOX matches inbox regex"
+     (check-true (regexp-match?
+                  #rx"(?i:^inbox$)" "INBOX")))
+   (test-case "INBOX.Sent does not match inbox regex"
+     (check-false (regexp-match?
+                   #rx"(?i:^inbox$)" "INBOX.Sent")))
+   (test-case "Various sent folders match sent regex"
+     (let ([rx #rx"(?i:sent|gesendet|envoy|inviati|enviados|verzonden)"])
+       (check-true (regexp-match? rx "Sent"))
+       (check-true (regexp-match? rx "INBOX.Sent"))
+       (check-true (regexp-match? rx "[Gmail]/Gesendet"))
+       (check-true (regexp-match? rx "[Google Mail]/Gesendet"))
+       (check-true (regexp-match? rx "Sent Messages"))
+       (check-false (regexp-match? rx "INBOX"))
+       (check-false (regexp-match? rx "Drafts"))
+       (check-false (regexp-match? rx "Spam")))))
+
+  (test-suite
+   "load-all-known-contacts"
+   (test-case "returns a set"
+     ;; We can't predict what's in the user's actual contacts file,
+     ;; but we can verify the result is a set-shaped value.
+     (check-true (set? (load-all-known-contacts)))))
   ))

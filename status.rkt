@@ -74,32 +74,6 @@
 
 ;; ---- digest loading ----
 
-(define (load-all-latest-digests)
-  (let ([dir (default-digest-dir)])
-    (if (directory-exists? dir)
-        (let ([by-key (make-hash)])
-          (for ([f (directory-list dir #:build? #t)]
-                #:when (regexp-match? #rx"\\.ser$" (path->string f)))
-            (with-handlers ([exn:fail? (lambda (e) (void))])
-              (let* ([mbd (load-mailbox-digest-from-file f)]
-                     [key (cons (mailbox-digest-mail-address mbd)
-                                (mailbox-digest-folder-name mbd))])
-                (let ([existing (hash-ref by-key key #f)])
-                  (when (or (not existing)
-                            (datetime>? (mailbox-digest-timestamp mbd)
-                                        (mailbox-digest-timestamp existing)))
-                    (hash-set! by-key key mbd))))))
-          (hash-values by-key))
-        '())))
-
-(define inbox-rx
-  #rx"(?i:^inbox$)")
-
-(define (inbox-digests digests)
-  (filter (lambda (mbd)
-            (regexp-match? inbox-rx (mailbox-digest-folder-name mbd)))
-          digests))
-
 ;; Group digests by account email
 (define (digests-by-account digests)
   (let ([h (make-hash)])
@@ -108,31 +82,8 @@
         (hash-update! h email (lambda (lst) (cons mbd lst)) '())))
     h))
 
-;; ---- combined contacts ----
-
-;; Load both known-contacts and derived-contacts as a single set.
-(define (load-all-known-contacts)
-  (let ([known (with-handlers ([exn:fail? (lambda (e) (set))])
-                 (load-known-contacts (default-known-contacts-filepath)))]
-        [derived (with-handlers ([exn:fail? (lambda (e) (set))])
-                   (let ([path (default-derived-contacts-filepath)])
-                     (if (file-exists? path)
-                         (let ([result (mutable-set)])
-                           (for ([line (file->lines path)])
-                             (let ([trimmed (string-trim line)])
-                               (unless (or (string=? trimmed "")
-                                           (regexp-match? #rx"^#" trimmed))
-                                 (set-add! result (string-downcase trimmed)))))
-                           result)
-                         (set))))])
-    (set-union known derived)))
-
-;; ---- formatting helpers ----
-
-(define (extract-from-addr from-str)
-  (with-handlers ([exn:fail? (lambda (e) "")])
-    (let ([addrs (extract-addresses from-str 'address)])
-      (if (null? addrs) "" (string-downcase (first addrs))))))
+;; The inbox regex used in compute-account-stats below
+(define inbox-rx #rx"(?i:^inbox$)")
 
 ;; ---- per-account summary ----
 

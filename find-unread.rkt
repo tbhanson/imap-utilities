@@ -7,6 +7,9 @@
 ;; people you've corresponded with is surfaced regardless of where they
 ;; first wrote to you.
 ;;
+;; By default, mail from your own addresses (any address in credentials)
+;; is excluded. Use --include-self to disable that.
+;;
 ;; Usage:
 ;;   racket find-unread.rkt                              ; unread from contacts
 ;;   racket find-unread.rkt --all                        ; unread from anyone
@@ -18,6 +21,17 @@
 ;;   racket find-unread.rkt --before 2024-07-01          ; messages before date
 ;;   racket find-unread.rkt --category family --year 2025  ; combine filters
 ;;   racket find-unread.rkt --categories                 ; list available categories
+;;   racket find-unread.rkt --include-self               ; show mail from my own addresses too
+;;   racket find-unread.rkt --exclude-pattern '@lists?\\.' ; exclude addresses matching regex
+;;   racket find-unread.rkt --exclude-pattern noreply --exclude-pattern listserv
+;;   racket find-unread.rkt --exclude-category moi        ; exclude all addresses in a category
+;;   racket find-unread.rkt --exclude-category moi --exclude-category lists
+;;
+;; --exclude-pattern is a Perl-style regex applied to the lowercased
+;; sender address. Multiple --exclude-pattern flags are combined as OR.
+;;
+;; --exclude-category names a category from known-contacts.txt and
+;; excludes all addresses tagged with that category. Repeatable.
 ;;
 ;; --category only matches the categorized portion of known-contacts.txt;
 ;; derived contacts have no categories and are therefore ignored when
@@ -47,8 +61,7 @@
   (member '|\\Seen| (main-mail-header-parts-flags hdr)))
 
 (define (message-from-addr hdr)
-  (with-handlers ([exn:fail? (lambda (e) "")])
-    ((mail-digest-from-header-parts hdr) 'from-addr)))
+  (extract-from-addr (main-mail-header-parts-from hdr)))
 
 (define (message-date hdr)
   (with-handlers ([exn:fail? (lambda (e) #f)])
@@ -149,7 +162,10 @@
         [year-filter #f]
         [since-filter #f]
         [before-filter #f]
-        [list-categories? #f])
+        [list-categories? #f]
+        [exclude-patterns '()]
+        [exclude-categories '()]
+        [include-self? #f])
     (let loop ([remaining arg-list])
       (cond
         [(null? remaining) (void)]
@@ -158,6 +174,9 @@
          (loop (cdr remaining))]
         [(string=? (car remaining) "--categories")
          (set! list-categories? #t)
+         (loop (cdr remaining))]
+        [(string=? (car remaining) "--include-self")
+         (set! include-self? #t)
          (loop (cdr remaining))]
         [(and (string=? (car remaining) "--from")
               (not (null? (cdr remaining))))
@@ -184,19 +203,61 @@
               (not (null? (cdr remaining))))
          (set! before-filter (parse-date-arg (cadr remaining)))
          (loop (cddr remaining))]
+        [(and (string=? (car remaining) "--exclude-pattern")
+              (not (null? (cdr remaining))))
+         (set! exclude-patterns (cons (cadr remaining) exclude-patterns))
+         (loop (cddr remaining))]
+        [(and (string=? (car remaining) "--exclude-category")
+              (not (null? (cdr remaining))))
+         (set! exclude-categories (cons (cadr remaining) exclude-categories))
+         (loop (cddr remaining))]
         [else (loop (cdr remaining))]))
     (values show-all? from-filter category-filter account-filter
-            year-filter since-filter before-filter list-categories?)))
+            year-filter since-filter before-filter list-categories?
+            (reverse exclude-patterns) (reverse exclude-categories)
+            include-self?)))
 
 ;; ---- main ----
 
 (define (main)
   (let-values ([(show-all? from-filter category-filter account-filter
-                 year-filter since-filter before-filter list-categories?)
+                 year-filter since-filter before-filter list-categories?
+                 exclude-patterns exclude-categories include-self?)
                 (parse-args (current-command-line-arguments))])
 
-    (let ([categorized (load-known-contacts-categorized (default-known-contacts-filepath))]
-          [known-set (load-all-known-contacts)])
+    (let* ([categorized (load-known-contacts-categorized (default-known-contacts-filepath))]
+           [known-set (load-all-known-contacts)]
+           ;; All my own email addresses, from credentials. Used to
+           ;; suppress mail from myself unless --include-self is given
+           ;; or --from explicitly targets one of my addresses.
+           [self-addresses
+            (with-handlers ([exn:fail? (lambda (e) (set))])
+              (let ([creds (read-email-account-credentials-hash-from-file-named
+                            (default-credentials-filepath))])
+                (for/set ([name (hash-keys creds)])
+                  (string-downcase
+                   (imap-email-account-credentials-mailaddress
+                    (hash-ref creds name))))))]
+           ;; Addresses to exclude based on --exclude-category. We collect
+           ;; the union of all addresses in the named categories.
+           [excluded-by-category
+            (let ([result (mutable-set)])
+              (for ([cat exclude-categories])
+                (let ([cat-contacts (contacts-in-category categorized cat)])
+                  (when (set-empty? cat-contacts)
+                    (printf "Warning: --exclude-category ~s matched no contacts~n" cat))
+                  (for ([a (in-set cat-contacts)])
+                    (set-add! result (string-downcase a)))))
+              result)]
+           ;; Compile exclude patterns into regexes
+           [exclude-regexes
+            (for/list ([p exclude-patterns])
+              (with-handlers ([exn:fail?
+                               (lambda (e)
+                                 (printf "Warning: bad exclude pattern ~s: ~a~n"
+                                         p (exn-message e))
+                                 #f)])
+                (pregexp p)))])
 
       ;; --categories: just list categories and exit
       (when list-categories?
@@ -271,7 +332,11 @@
                                                          (mailbox-digest-folder-name d))))])
                 (let ([account (mailbox-digest-mail-address mbd)]
                       [folder (mailbox-digest-folder-name mbd)]
+                      [msg-count (length (mailbox-digest-mail-headers mbd))]
                       [unread-matches '()])
+
+                  (eprintf "  scanning ~a / ~a (~a messages)... " account folder msg-count)
+                  (flush-output (current-error-port))
 
                   (for ([hdr (mailbox-digest-mail-headers mbd)])
                     (unless (message-seen? hdr)
@@ -282,7 +347,21 @@
                                (or (not filter-set)
                                    (set-member? filter-set (string-downcase from)))
                                ;; Date filter
-                               (date-matches? hdr year-filter since-filter before-filter))
+                               (date-matches? hdr year-filter since-filter before-filter)
+                               ;; Self-exclusion (skip if from one of my own
+                               ;; addresses, unless --include-self or --from
+                               ;; explicitly targets a self address).
+                               (or include-self?
+                                   from-filter
+                                   (not (set-member? self-addresses
+                                                     (string-downcase from))))
+                               ;; Category exclusion (--exclude-category)
+                               (or from-filter
+                                   (not (set-member? excluded-by-category
+                                                     (string-downcase from))))
+                               ;; Exclude-pattern filter
+                               (not (for/or ([rx exclude-regexes])
+                                      (and rx (regexp-match? rx from)))))
                           (set! total-matching (add1 total-matching))
                           (set! unread-matches
                                 (cons (list from
@@ -290,6 +369,8 @@
                                             (main-mail-header-parts-date-string hdr)
                                             (known-contact-category categorized from))
                                       unread-matches))))))
+
+                  (eprintf "~a matched~n" (length unread-matches))
 
                   (when (not (null? unread-matches))
                     (printf "~a / ~a (~a unread matching ~a):~n"

@@ -2,8 +2,13 @@
 
 ;; Find unread messages from known contacts across all saved digests.
 ;;
+;; Default behavior treats anyone in known-contacts OR in derived-contacts
+;; (people you've ever sent mail to) as a "contact" — so unread mail from
+;; people you've corresponded with is surfaced regardless of where they
+;; first wrote to you.
+;;
 ;; Usage:
-;;   racket find-unread.rkt                              ; unread from known contacts
+;;   racket find-unread.rkt                              ; unread from contacts
 ;;   racket find-unread.rkt --all                        ; unread from anyone
 ;;   racket find-unread.rkt --from someone@example.com   ; unread from a specific sender
 ;;   racket find-unread.rkt --category family            ; unread from a contact category
@@ -13,6 +18,10 @@
 ;;   racket find-unread.rkt --before 2024-07-01          ; messages before date
 ;;   racket find-unread.rkt --category family --year 2025  ; combine filters
 ;;   racket find-unread.rkt --categories                 ; list available categories
+;;
+;; --category only matches the categorized portion of known-contacts.txt;
+;; derived contacts have no categories and are therefore ignored when
+;; --category is used.
 ;;
 ;; Date filters can be combined: --since 2024-01-01 --before 2024-07-01
 ;; gives the first half of 2024.
@@ -27,7 +36,10 @@
   "src/mail-digest.rkt"
   "src/known-contacts.rkt"
   "src/parse-mail-dates.rkt"
+  "src/utils.rkt"
   gregor)
+
+(handle-broken-pipe)
 
 ;; ---- helpers ----
 
@@ -184,7 +196,7 @@
                 (parse-args (current-command-line-arguments))])
 
     (let ([categorized (load-known-contacts-categorized (default-known-contacts-filepath))]
-          [known-set (load-known-contacts (default-known-contacts-filepath))])
+          [known-set (load-all-known-contacts)])
 
       ;; --categories: just list categories and exit
       (when list-categories?

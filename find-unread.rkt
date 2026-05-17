@@ -26,6 +26,8 @@
 ;;   racket find-unread.rkt --exclude-pattern noreply --exclude-pattern listserv
 ;;   racket find-unread.rkt --exclude-category moi        ; exclude all addresses in a category
 ;;   racket find-unread.rkt --exclude-category moi --exclude-category lists
+;;   racket find-unread.rkt --by-sender                   ; alphabetical, with counts and date ranges
+;;   racket find-unread.rkt --newest-first                ; flat reverse-chronological across accounts
 ;;
 ;; --exclude-pattern is a Perl-style regex applied to the lowercased
 ;; sender address. Multiple --exclude-pattern flags are combined as OR.
@@ -165,7 +167,8 @@
         [list-categories? #f]
         [exclude-patterns '()]
         [exclude-categories '()]
-        [include-self? #f])
+        [include-self? #f]
+        [view-mode 'grouped])
     (let loop ([remaining arg-list])
       (cond
         [(null? remaining) (void)]
@@ -211,18 +214,112 @@
               (not (null? (cdr remaining))))
          (set! exclude-categories (cons (cadr remaining) exclude-categories))
          (loop (cddr remaining))]
+        [(string=? (car remaining) "--by-sender")
+         (set! view-mode 'by-sender)
+         (loop (cdr remaining))]
+        [(string=? (car remaining) "--newest-first")
+         (set! view-mode 'newest-first)
+         (loop (cdr remaining))]
         [else (loop (cdr remaining))]))
     (values show-all? from-filter category-filter account-filter
             year-filter since-filter before-filter list-categories?
             (reverse exclude-patterns) (reverse exclude-categories)
-            include-self?)))
+            include-self? view-mode)))
+
+;; ---- rendering ----
+
+(define (format-match-line m)
+  (let ([from (hash-ref m 'from)]
+        [subj (hash-ref m 'subj)]
+        [date (hash-ref m 'date-string)]
+        [cat (hash-ref m 'category)])
+    (format "  ~a  ~a~a~n    ~a~n"
+            date from
+            (if cat (format "  [~a]" cat) "")
+            (if (string=? subj "") "(no subject)" subj))))
+
+;; Default view: grouped by account/folder (preserves the original
+;; output style). Within each folder, messages are in the order they
+;; were scanned (chronological — oldest first).
+(define (render-grouped all-matches filter-label)
+  (let ([by-folder (make-hash)])
+    (for ([m all-matches])
+      (let ([key (cons (hash-ref m 'account) (hash-ref m 'folder))])
+        (hash-update! by-folder key (lambda (lst) (cons m lst)) '())))
+    (for ([key (sort (hash-keys by-folder) string<?
+                     #:key (lambda (p) (format "~a/~a" (car p) (cdr p))))])
+      (let ([account (car key)]
+            [folder (cdr key)]
+            [matches (hash-ref by-folder key)])
+        (printf "~a / ~a (~a unread matching ~a):~n"
+                account folder (length matches) filter-label)
+        (for ([m (reverse matches)])
+          (display (format-match-line m)))
+        (newline)))))
+
+;; Newest-first view: a single flat list across all accounts, sorted
+;; by epoch descending. Useful for "what's recent and unread that I
+;; should pay attention to."
+(define (render-newest-first all-matches filter-label)
+  (let ([sorted (sort all-matches >
+                      #:key (lambda (m) (or (hash-ref m 'epoch) 0)))])
+    (printf "Newest-first across all accounts (~a unread matching ~a):~n"
+            (length sorted) filter-label)
+    (for ([m sorted])
+      (let ([account (hash-ref m 'account)])
+        (printf "  [~a]~n" account)
+        (display (format-match-line m))))
+    (newline)))
+
+;; By-sender view: alphabetical by sender, with counts and date ranges.
+;; Useful for "who's been writing to me — and how much?"
+(define (render-by-sender all-matches filter-label)
+  (let ([by-sender (make-hash)])
+    (for ([m all-matches])
+      (let ([from (hash-ref m 'from)])
+        (hash-update! by-sender from (lambda (lst) (cons m lst)) '())))
+
+    (printf "By sender (~a unique senders, ~a unread matching ~a):~n~n"
+            (hash-count by-sender) (length all-matches) filter-label)
+
+    (let ([senders (sort (hash-keys by-sender) string<?)])
+      (printf "  ~a  ~a  ~a~n"
+              (~a "Count" #:min-width 6 #:align 'right)
+              (~a "Date range" #:min-width 25)
+              "Sender")
+      (printf "  ~a  ~a  ~a~n"
+              (make-string 6 #\-)
+              (make-string 25 #\-)
+              (make-string 50 #\-))
+      (for ([sender senders])
+        (let* ([msgs (hash-ref by-sender sender)]
+               [epochs (filter values (map (lambda (m) (hash-ref m 'epoch)) msgs))]
+               [date-range
+                (cond
+                  [(null? epochs) "(no parseable dates)"]
+                  [(= 1 (length epochs))
+                   (let ([dt (posix->datetime (first epochs))])
+                     (~t dt "yyyy-MM-dd"))]
+                  [else
+                   (let ([oldest (apply min epochs)]
+                         [newest (apply max epochs)])
+                     (format "~a → ~a"
+                             (~t (posix->datetime oldest) "yyyy-MM-dd")
+                             (~t (posix->datetime newest) "yyyy-MM-dd")))])]
+               [cat (hash-ref (first msgs) 'category)])
+          (printf "  ~a  ~a  ~a~a~n"
+                  (~a (length msgs) #:min-width 6 #:align 'right)
+                  (~a date-range #:min-width 25)
+                  sender
+                  (if cat (format "  [~a]" cat) "")))))
+    (newline)))
 
 ;; ---- main ----
 
 (define (main)
   (let-values ([(show-all? from-filter category-filter account-filter
                  year-filter since-filter before-filter list-categories?
-                 exclude-patterns exclude-categories include-self?)
+                 exclude-patterns exclude-categories include-self? view-mode)
                 (parse-args (current-command-line-arguments))])
 
     (let* ([categorized (load-known-contacts-categorized (default-known-contacts-filepath))]
@@ -324,7 +421,11 @@
                     (length digests) filter-label)
 
             (let ([total-unread 0]
-                  [total-matching 0])
+                  [total-matching 0]
+                  ;; All matches across all digests, accumulated for
+                  ;; final rendering. Each record is a hash with keys:
+                  ;;   account, folder, from, subj, date-string, epoch, category
+                  [all-matches '()])
 
               (for ([mbd (sort digests string<?
                                #:key (lambda (d) (format "~a/~a"
@@ -333,7 +434,7 @@
                 (let ([account (mailbox-digest-mail-address mbd)]
                       [folder (mailbox-digest-folder-name mbd)]
                       [msg-count (length (mailbox-digest-mail-headers mbd))]
-                      [unread-matches '()])
+                      [folder-matches 0])
 
                   (eprintf "  scanning ~a / ~a (~a messages)... " account folder msg-count)
                   (flush-output (current-error-port))
@@ -363,30 +464,28 @@
                                (not (for/or ([rx exclude-regexes])
                                       (and rx (regexp-match? rx from)))))
                           (set! total-matching (add1 total-matching))
-                          (set! unread-matches
-                                (cons (list from
-                                            (main-mail-header-parts-subj hdr)
-                                            (main-mail-header-parts-date-string hdr)
-                                            (known-contact-category categorized from))
-                                      unread-matches))))))
+                          (set! folder-matches (add1 folder-matches))
+                          (set! all-matches
+                                (cons
+                                 (hash 'account account
+                                       'folder folder
+                                       'from from
+                                       'subj (main-mail-header-parts-subj hdr)
+                                       'date-string (main-mail-header-parts-date-string hdr)
+                                       'epoch (main-mail-header-parts-parsed-epoch hdr)
+                                       'category (known-contact-category categorized from))
+                                 all-matches))))))
 
-                  (eprintf "~a matched~n" (length unread-matches))
+                  (eprintf "~a matched~n" folder-matches)))
 
-                  (when (not (null? unread-matches))
-                    (printf "~a / ~a (~a unread matching ~a):~n"
-                            account folder
-                            (length unread-matches)
-                            filter-label)
-                    (for ([match (reverse unread-matches)])
-                      (let ([from (first match)]
-                            [subj (second match)]
-                            [date (third match)]
-                            [cat (fourth match)])
-                        (printf "  ~a  ~a~a~n    ~a~n"
-                                date from
-                                (if cat (format "  [~a]" cat) "")
-                                (if (string=? subj "") "(no subject)" subj))))
-                    (newline))))
+              ;; Render based on view mode
+              (case view-mode
+                [(by-sender)
+                 (render-by-sender all-matches filter-label)]
+                [(newest-first)
+                 (render-newest-first all-matches filter-label)]
+                [else
+                 (render-grouped all-matches filter-label)])
 
               (printf "======================================================================~n")
               (printf "  Total unread across scanned digests: ~a~n" total-unread)

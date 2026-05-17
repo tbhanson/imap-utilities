@@ -209,52 +209,116 @@
                          (values result))])
         (values (cons (load-mailbox-digest-from-file f) result))))))
 
+;; Filter digests to those whose account or folder matches the given
+;; substring (case-insensitive, against both email address and folder name).
+(define (digests-matching-substring digests substr)
+  (let ([s (string-downcase substr)])
+    (filter (lambda (mbd)
+              (let ([key (string-downcase
+                          (format "~a/~a"
+                                  (mailbox-digest-mail-address mbd)
+                                  (mailbox-digest-folder-name mbd)))])
+                (string-contains? key s)))
+            digests)))
+
 ;; ---- main ----
 
 (define (main)
   (let ([args (current-command-line-arguments)])
     (when (< (vector-length args) 1)
-      (printf "Usage: racket inspect-digest.rkt <latest | each | all | path-to-.ser>~n")
-      (printf "  latest  — inspect the most recently saved digest~n")
-      (printf "  each    — detailed report for every saved digest~n")
-      (printf "  all     — combined summary across all digests~n")
+      (printf "Usage: racket inspect-digest.rkt <command> [--account <substr>]~n")
+      (printf "  latest                 — inspect the most recent digest~n")
+      (printf "  each                   — detailed report for every saved digest~n")
+      (printf "  all                    — combined summary across all digests~n")
+      (printf "  <path-to-.ser>         — inspect a specific file~n")
+      (printf "  --account <substr>     — limit to digests where account/folder~n")
+      (printf "                           matches the substring (case-insensitive)~n")
+      (printf "~nExamples:~n")
+      (printf "  racket inspect-digest.rkt each --account tim@we~n")
+      (printf "  racket inspect-digest.rkt latest --account gmx~n")
+      (printf "  racket inspect-digest.rkt all --account tbh361~n")
       (exit 1))
 
-    (let ([arg (vector-ref args 0)])
-      (printf "============================================================~n")
-      (printf "  Digest Inspection Report~n")
-      (printf "============================================================~n")
-      (cond
-        [(string=? arg "latest")
-         (let ([path (find-latest-digest-file)])
-           (when path
-             (printf "~nLoading ~a ...~n" (file-name-from-path path))
-             (inspect-one-digest (load-mailbox-digest-from-file path))))]
+    ;; Pull out --account if present
+    (let-values ([(positional account-filter)
+                  (let loop ([rest (vector->list args)]
+                             [pos '()]
+                             [acct #f])
+                    (cond
+                      [(null? rest) (values (reverse pos) acct)]
+                      [(and (string=? (car rest) "--account")
+                            (not (null? (cdr rest))))
+                       (loop (cddr rest) pos (cadr rest))]
+                      [else (loop (cdr rest) (cons (car rest) pos) acct)]))])
 
-        [(string=? arg "each")
-         (let ([files (all-digest-files)])
-           (printf "~nFound ~a digest files.~n" (length files))
-           (for ([f files])
-             (printf "~nLoading ~a ...~n" (file-name-from-path f))
-             (with-handlers ([exn:fail?
-                              (lambda (e)
-                                (printf "  ERROR: ~a~n" (exn-message e)))])
-               (inspect-one-digest (load-mailbox-digest-from-file f)))))]
+      (when (null? positional)
+        (printf "Missing command. Try: latest, each, all, or a .ser path.~n")
+        (exit 1))
 
-        [(string=? arg "all")
-         (printf "~nLoading all digests...~n")
-         (let ([digests (load-all-digests)])
-           (if (null? digests)
-               (printf "No digests found.~n")
-               (inspect-all-combined digests)))]
+      (let ([arg (car positional)])
+        (printf "============================================================~n")
+        (printf "  Digest Inspection Report~n")
+        (printf "============================================================~n")
+        (cond
+          [(string=? arg "latest")
+           (cond
+             [account-filter
+              (let* ([all (load-all-digests)]
+                     [matching (digests-matching-substring all account-filter)])
+                (if (null? matching)
+                    (printf "No digests match '~a'.~n" account-filter)
+                    ;; Among matches, pick the most recently fetched
+                    (let ([latest (argmax (lambda (mbd)
+                                            (->posix (mailbox-digest-timestamp mbd)))
+                                          matching)])
+                      (printf "~nMost recent digest matching '~a':~n" account-filter)
+                      (inspect-one-digest latest))))]
+             [else
+              (let ([path (find-latest-digest-file)])
+                (when path
+                  (printf "~nLoading ~a ...~n" (file-name-from-path path))
+                  (inspect-one-digest (load-mailbox-digest-from-file path))))])]
 
-        [else
-         (let ([path (string->path arg)])
-           (unless (file-exists? path)
-             (printf "File not found: ~a~n" arg)
-             (exit 1))
-           (inspect-one-digest (load-mailbox-digest-from-file path)))])
+          [(string=? arg "each")
+           (cond
+             [account-filter
+              (let* ([all (load-all-digests)]
+                     [matching (digests-matching-substring all account-filter)])
+                (printf "~nFound ~a digest(s) matching '~a'.~n"
+                        (length matching) account-filter)
+                (for ([mbd matching])
+                  (printf "~n")
+                  (inspect-one-digest mbd)))]
+             [else
+              (let ([files (all-digest-files)])
+                (printf "~nFound ~a digest files.~n" (length files))
+                (for ([f files])
+                  (printf "~nLoading ~a ...~n" (file-name-from-path f))
+                  (with-handlers ([exn:fail?
+                                   (lambda (e)
+                                     (printf "  ERROR: ~a~n" (exn-message e)))])
+                    (inspect-one-digest (load-mailbox-digest-from-file f)))))])]
 
-      (printf "~n============================================================~n"))))
+          [(string=? arg "all")
+           (printf "~nLoading all digests...~n")
+           (let* ([all (load-all-digests)]
+                  [digests (if account-filter
+                               (digests-matching-substring all account-filter)
+                               all)])
+             (when account-filter
+               (printf "Filtered to ~a digest(s) matching '~a'.~n"
+                       (length digests) account-filter))
+             (if (null? digests)
+                 (printf "No digests found.~n")
+                 (inspect-all-combined digests)))]
+
+          [else
+           (let ([path (string->path arg)])
+             (unless (file-exists? path)
+               (printf "File not found: ~a~n" arg)
+               (exit 1))
+             (inspect-one-digest (load-mailbox-digest-from-file path)))])
+
+        (printf "~n============================================================~n")))))
 
 (main)
